@@ -7,6 +7,10 @@ import { VoiceGateway } from './voiceGateway/gateway';
 import { TwiMLController } from './twilio/twimlController';
 import { createLogger } from './utils/logger';
 import { KnowledgeService } from './knowledge/knowledgeService';
+import { AuthController } from './auth/authController';
+import { jwtMiddleware, AuthenticatedRequest } from './auth/jwtMiddleware';
+import { BillingService } from './billing/billingService';
+import { OutboundController } from './outbound/outboundController';
 
 const logger = createLogger('Server');
 
@@ -52,6 +56,8 @@ app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 
 const knowledgeService = new KnowledgeService();
+const authController = new AuthController();
+const billingService = new BillingService();
 
 /**
  * Initialize core components:
@@ -64,6 +70,7 @@ const knowledgeService = new KnowledgeService();
  */
 const wsUrl = `${NGROK_URL}${WS_PATH}`;
 const twimlController = new TwiMLController(wsUrl);
+const outboundController = new OutboundController();
 const voiceGateway = new VoiceGateway(server, WS_PATH);
 
 app.get('/', (_req: Request, res: Response) => {
@@ -76,6 +83,14 @@ app.get('/', (_req: Request, res: Response) => {
       health: '/health',
     },
   });
+});
+
+app.post('/auth/register', async (req: Request, res: Response) => {
+  await authController.register(req, res);
+});
+
+app.post('/auth/login', async (req: Request, res: Response) => {
+  await authController.login(req, res);
 });
 
 app.post('/voice', (req: Request, res: Response) => {
@@ -91,8 +106,13 @@ app.get('/health', (_req: Request, res: Response) => {
   });
 });
 
-app.post('/agents/:agentId/knowledge', async (req: Request, res: Response) => {
+app.post('/outbound/call', async (req: Request, res: Response) => {
+  await outboundController.createOutboundCall(req, res);
+});
+
+app.post('/agents/:agentId/knowledge', jwtMiddleware, async (req: Request, res: Response) => {
   const { agentId } = req.params;
+  const { user } = req as AuthenticatedRequest;
   const { content } = req.body as { content?: string };
 
   if (!content || typeof content !== 'string' || !content.trim()) {
@@ -101,11 +121,29 @@ app.post('/agents/:agentId/knowledge', async (req: Request, res: Response) => {
   }
 
   try {
+    // In a full implementation, verify that the agent belongs to user.organizationId here.
     const document = await knowledgeService.addDocument(agentId, content);
     res.status(201).json({ id: document.id });
   } catch (error) {
     logger.error('Failed to add knowledge document', error);
     res.status(500).json({ error: 'Failed to add knowledge document' });
+  }
+});
+
+app.get('/billing/usage', jwtMiddleware, async (req: Request, res: Response) => {
+  const { user } = req as AuthenticatedRequest;
+
+  if (!user) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+
+  try {
+    const summary = await billingService.getOrganizationUsage(user.organizationId);
+    res.json(summary);
+  } catch (error) {
+    logger.error('Failed to fetch usage summary', error);
+    res.status(500).json({ error: 'Failed to fetch usage summary' });
   }
 });
 

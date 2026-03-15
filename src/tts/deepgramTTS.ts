@@ -162,6 +162,9 @@ export class DeepgramTTS {
             totalChunks++;
             totalBytes += chunk.length;
 
+            const seconds = chunk.length / 8000;
+            session.ttsSeconds = (session.ttsSeconds || 0) + seconds;
+
             const base64Audio = chunk.toString('base64');
 
             const mediaMessage = {
@@ -226,6 +229,29 @@ export class DeepgramTTS {
       req.write(body);
       req.end();
     });
+  }
+
+  stopSpeaking(session: CallSession, ws: WebSocket): void {
+    const { callSid, streamSid } = session;
+
+    logger.info('[TTS_STOPPED]', { callSid });
+
+    if (session.ttsAbortController) {
+      session.ttsAbortController.abort();
+    }
+
+    this.abort(callSid);
+    this.clearQueue(callSid);
+
+    if (ws.readyState === WebSocket.OPEN) {
+      const clearMessage = {
+        event: 'clear',
+        streamSid,
+      };
+      ws.send(JSON.stringify(clearMessage));
+    }
+
+    session.isSpeaking = false;
   }
 
   abort(callSid: string): void {

@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { createLogger } from '../utils/logger';
+import { OutboundService } from '../outbound/outboundService';
 
 const logger = createLogger('TwiMLController');
 
@@ -24,34 +25,66 @@ const logger = createLogger('TwiMLController');
  */
 export class TwiMLController {
   private wsUrl: string;
+  private outboundService: OutboundService;
 
   constructor(wsUrl: string) {
     this.wsUrl = wsUrl;
+    this.outboundService = new OutboundService();
   }
 
-  handleVoiceWebhook(req: Request, res: Response): void {
-    const { CallSid, From, To } = req.body;
+  async handleVoiceWebhook(req: Request, res: Response): Promise<void> {
+    const { CallSid, From, To, Direction } = req.body as {
+      CallSid?: string;
+      From?: string;
+      To?: string;
+      Direction?: string;
+    };
 
     logger.info('Incoming voice call', { 
       callSid: CallSid, 
       from: From, 
-      to: To 
+      to: To,
+      direction: Direction,
     });
 
-    const twiml = this.generateStreamTwiML(To);
+    let agentId: string | undefined;
+
+    if (CallSid) {
+      try {
+        const outboundCall = await this.outboundService.findByCallSid(CallSid);
+        if (outboundCall && outboundCall.agentId) {
+          agentId = outboundCall.agentId;
+          logger.info('[OUTBOUND_CALL_CONNECTED]', {
+            callSid: CallSid,
+            outboundCallId: outboundCall.id,
+            agentId: outboundCall.agentId,
+          });
+        }
+      } catch (error) {
+        logger.error('Failed to resolve outbound call for webhook', {
+          callSid: CallSid,
+          error,
+        });
+      }
+    }
+
+    const twiml = this.generateStreamTwiML(To, agentId);
     
     res.type('text/xml');
     res.send(twiml);
   }
 
-  private generateStreamTwiML(toPhoneNumber: string): string {
+  private generateStreamTwiML(toPhoneNumber: string, agentId?: string): string {
     const encodedPhone = encodeURIComponent(toPhoneNumber);
+    const agentParam = agentId
+      ? `      <Parameter name="agentId" value="${encodeURIComponent(agentId)}" />\n`
+      : '';
     return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
     <Stream url="${this.wsUrl}">
       <Parameter name="toPhoneNumber" value="${encodedPhone}" />
-    </Stream>
+${agentParam}    </Stream>
   </Connect>
 </Response>`;
   }

@@ -13,6 +13,7 @@ enum SttProvider {
 
 model Agent {
   id                 String              @id @default(uuid())
+  organizationId     String?
   name               String
   systemPrompt       String
   voice              String
@@ -22,6 +23,8 @@ model Agent {
   phoneNumbers       PhoneNumber[]
   knowledgeDocuments KnowledgeDocument[]
   tools              Tool[]
+
+  organization Organization? @relation(fields: [organizationId], references: [id])
 }
 
 model PhoneNumber {
@@ -33,6 +36,7 @@ model PhoneNumber {
 
 model KnowledgeDocument {
   id        String   @id @default(uuid())
+  organizationId String?
   agentId   String
   content   String
   embedding Float[]
@@ -45,6 +49,7 @@ model KnowledgeDocument {
 
 model Tool {
   id          String   @id @default(uuid())
+  organizationId String?
   agentId     String
   name        String
   description String
@@ -60,6 +65,8 @@ model Call {
   id        String   @id @default(uuid())
   callSid   String   @unique
   agentId   String?
+  organizationId String?
+  customerId String?
   phone     String
   startedAt DateTime
   endedAt   DateTime?
@@ -68,6 +75,28 @@ model Call {
 
   messages   Message[]
   toolEvents ToolEvent[]
+
+  customer Customer? @relation(fields: [customerId], references: [id])
+  organization Organization? @relation(fields: [organizationId], references: [id])
+}
+
+model Customer {
+  id        String   @id @default(uuid())
+  phone     String   @unique
+  name      String?
+  createdAt DateTime @default(now())
+
+  calls     Call[]
+  notes     CustomerNote[]
+}
+
+model CustomerNote {
+  id         String   @id @default(uuid())
+  customerId String
+  content    String
+  createdAt  DateTime @default(now())
+
+  customer Customer @relation(fields: [customerId], references: [id])
 }
 
 model Message {
@@ -90,4 +119,41 @@ model ToolEvent {
   createdAt DateTime @default(now())
 
   call Call @relation(fields: [callId], references: [id])
+}
+
+model UsageRecord {
+  id             String   @id @default(uuid())
+  organizationId String
+  type           String
+  quantity       Float
+  createdAt      DateTime @default(now())
+}
+
+model OutboundCall {
+  id        String   @id @default(uuid())
+  phone     String
+  agentId   String?
+  status    String   @default("initiated")
+  callSid   String?
+  createdAt DateTime @default(now())
+}
+
+model Organization {
+  id        String   @id @default(uuid())
+  name      String
+  createdAt DateTime @default(now())
+
+  users     User[]
+  agents    Agent[]
+  calls     Call[]
+}
+
+model User {
+  id             String   @id @default(uuid())
+  email          String   @unique
+  passwordHash   String
+  role           String
+  organizationId String
+
+  organization Organization @relation(fields: [organizationId], references: [id])
 }

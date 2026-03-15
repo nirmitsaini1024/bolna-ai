@@ -26,6 +26,8 @@ import { toolExecutor } from '../tools/toolExecutor';
 import { CallService } from '../analytics/callService';
 import { MessageService } from '../analytics/messageService';
 import { ToolEventService } from '../analytics/toolEventService';
+import { CustomerService } from '../customers/customerService';
+import { UsageService } from '../billing/usageService';
 
 const logger = createLogger('StreamHandler');
 
@@ -71,6 +73,8 @@ export class StreamHandler {
   private callService: CallService;
   private messageService: MessageService;
   private toolEventService: ToolEventService;
+  private customerService: CustomerService;
+  private usageService: UsageService;
 
   constructor() {
     this.agentService = new AgentService();
@@ -79,6 +83,8 @@ export class StreamHandler {
     this.callService = new CallService();
     this.messageService = new MessageService();
     this.toolEventService = new ToolEventService();
+    this.customerService = new CustomerService();
+    this.usageService = new UsageService();
     
     if (OPENROUTER_API_KEY) {
       this.llmClient = new OpenRouterClient({
@@ -184,6 +190,10 @@ export class StreamHandler {
       isSpeaking: false,
       ttsAbortController: undefined,
       toPhoneNumber,
+      fromPhoneNumber,
+      sttSeconds: 0,
+      ttsSeconds: 0,
+      llmTokens: 0,
     };
 
     this.sessions.set(connectionId, session);
@@ -198,6 +208,42 @@ export class StreamHandler {
       toPhoneNumber,
       fromPhoneNumber,
     });
+
+    const phoneForCustomer = fromPhoneNumber || toPhoneNumber || '';
+
+    if (phoneForCustomer) {
+      try {
+        const customer = await this.customerService.getOrCreateCustomer(phoneForCustomer);
+
+        if (customer) {
+          session.customerId = customer.id;
+
+          logger.info('[CUSTOMER_LOADED]', {
+            customerId: customer.id,
+            phone: customer.phone,
+          });
+
+          try {
+            const historySummary = await this.customerService.getCustomerHistorySummary(customer.id);
+            session.customerHistorySummary = historySummary;
+          } catch (error) {
+            logger.error('Failed to load customer history summary', {
+              callSid,
+              customerId: customer.id,
+              error,
+            });
+          }
+        }
+      } catch (error) {
+        logger.error('Failed to load or create customer for call', {
+          callSid,
+          phone: phoneForCustomer,
+          error,
+        });
+      }
+    } else {
+      logger.warn('No phone number available for customer resolution', { callSid });
+    }
 
     if (toPhoneNumber) {
       await this.loadAgentForSession(session);
@@ -214,6 +260,19 @@ export class StreamHandler {
         agentId,
       });
       session.callId = callRecord.id;
+
+      if (session.callId && session.customerId) {
+        try {
+          await this.customerService.attachCallToCustomer(session.callId, session.customerId);
+        } catch (error) {
+          logger.error('Failed to attach call to customer', {
+            callSid,
+            callId: session.callId,
+            customerId: session.customerId,
+            error,
+          });
+        }
+      }
     } catch (error) {
       logger.error('Failed to create call analytics record', {
         callSid,
@@ -382,6 +441,27 @@ export class StreamHandler {
       confidence: result.confidence,
     });
 
+    const session = Array.from(this.sessions.values()).find((s) => s.callSid === callSid);
+
+    if (
+      session &&
+      session.isSpeaking &&
+      !result.isFinal &&
+      result.text &&
+      result.text.trim().length > 2
+    ) {
+      logger.info('[INTERRUPT_DETECTED]', {
+        callSid,
+        transcript: result.text,
+      });
+
+      if (this.ttsClient && session.ws) {
+        this.ttsClient.stopSpeaking(session, session.ws);
+      } else {
+        session.isSpeaking = false;
+      }
+    }
+
     if (result.isFinal && result.text.trim()) {
       await this.handleFinalTranscript(callSid, result.text, result.confidence);
     }
@@ -459,6 +539,14 @@ export class StreamHandler {
 
       const baseMessages: Message[] = [
         { role: 'system', content: systemPrompt },
+        ...(session.customerHistorySummary
+          ? [
+              {
+                role: 'system',
+                content: session.customerHistorySummary,
+              } as Message,
+            ]
+          : []),
         ...(knowledgeContext
           ? [
               {
@@ -491,6 +579,10 @@ export class StreamHandler {
       const firstMessage = firstChoice.message;
 
       let finalText: string | null = firstMessage.content ?? null;
+
+      if (firstResponse.usage?.total_tokens) {
+        session.llmTokens = (session.llmTokens || 0) + firstResponse.usage.total_tokens;
+      }
 
       if (firstMessage.tool_calls && firstMessage.tool_calls.length > 0 && session.agent) {
         const toolMessages: Message[] = [];
@@ -556,6 +648,10 @@ export class StreamHandler {
 
         const secondChoice = secondResponse.choices[0];
         finalText = secondChoice.message.content ?? '';
+
+        if (secondResponse.usage?.total_tokens) {
+          session.llmTokens = (session.llmTokens || 0) + secondResponse.usage.total_tokens;
+        }
       }
 
       const aiResponse = finalText ?? '';
@@ -679,6 +775,11 @@ export class StreamHandler {
       }
 
       const pushed = session.audioQueue.push(audioBuffer);
+
+      if (pushed) {
+        const seconds = audioBuffer.length / 8000;
+        session.sttSeconds = (session.sttSeconds || 0) + seconds;
+      }
       
       if (!pushed) {
         logger.warn('Audio queue full, dropping chunk', {
@@ -714,7 +815,37 @@ export class StreamHandler {
 
     if (session.callSid) {
       try {
-        await this.callService.endCall(session.callSid);
+        const call = await this.callService.endCall(session.callSid);
+
+        const organizationId = call?.organizationId || session.agent?.organizationId;
+        if (organizationId) {
+          const callMinutes = Math.max(duration / 1000 / 60, 0);
+          const sttSeconds = session.sttSeconds || 0;
+          const ttsSeconds = session.ttsSeconds || 0;
+          const llmTokens = session.llmTokens || 0;
+
+          // Fire-and-forget usage recording to avoid blocking pipeline shutdown
+          (async () => {
+            try {
+              await this.usageService.recordUsage(organizationId, 'call_minutes', callMinutes);
+              if (sttSeconds > 0) {
+                await this.usageService.recordUsage(organizationId, 'stt_seconds', sttSeconds);
+              }
+              if (ttsSeconds > 0) {
+                await this.usageService.recordUsage(organizationId, 'tts_seconds', ttsSeconds);
+              }
+              if (llmTokens > 0) {
+                await this.usageService.recordUsage(organizationId, 'llm_tokens', llmTokens);
+              }
+            } catch (error) {
+              logger.error('Failed to record usage for call', {
+                callSid: session.callSid,
+                organizationId,
+                error,
+              });
+            }
+          })();
+        }
       } catch (error) {
         logger.error('Failed to end call analytics record', {
           callSid: session.callSid,

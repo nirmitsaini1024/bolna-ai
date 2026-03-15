@@ -117,6 +117,7 @@ export interface CallSession {
   accountSid: string;
   startedAt: Date;
   callId?: string;
+  customerId?: string;
   tracks: ('inbound' | 'outbound')[];
   mediaFormat: {
     encoding: string;
@@ -131,6 +132,11 @@ export interface CallSession {
   ttsAbortController?: AbortController;
   agent?: Agent;
   toPhoneNumber?: string;
+  fromPhoneNumber?: string;
+  customerHistorySummary?: string;
+  sttSeconds?: number;
+  ttsSeconds?: number;
+  llmTokens?: number;
 }
 
 /**
