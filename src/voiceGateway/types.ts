@@ -116,6 +116,7 @@ export interface CallSession {
   callSid: string;
   accountSid: string;
   startedAt: Date;
+  callId?: string;
   tracks: ('inbound' | 'outbound')[];
   mediaFormat: {
     encoding: string;

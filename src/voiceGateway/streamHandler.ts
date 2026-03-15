@@ -15,15 +15,24 @@ import {
 } from './types';
 import { AudioQueue } from './audioQueue';
 import { DeepgramStream, TranscriptResult } from '../stt/deepgramStream';
-import { OpenRouterClient, Message } from '../llm/openrouterClient';
+import { SarvamStream } from '../stt/sarvamStream';
+import { OpenRouterClient, Message, OpenRouterToolCall } from '../llm/openrouterClient';
 import { DeepgramTTS } from '../tts/deepgramTTS';
 import { AgentService } from '../agents/agentService';
+import { KnowledgeService } from '../knowledge/knowledgeService';
+import { ToolService } from '../tools/toolService';
+import { toolRegistry } from '../tools/toolRegistry';
+import { toolExecutor } from '../tools/toolExecutor';
+import { CallService } from '../analytics/callService';
+import { MessageService } from '../analytics/messageService';
+import { ToolEventService } from '../analytics/toolEventService';
 
 const logger = createLogger('StreamHandler');
 
 const DEBUG_AUDIO = process.env.DEBUG_AUDIO === 'true';
 const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY || '';
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
+const SARVAM_API_KEY = process.env.SARVAM_API_KEY || '';
 const DEBUG_AUDIO_DIR = 'debug_audio';
 
 if (DEBUG_AUDIO) {
@@ -57,9 +66,19 @@ export class StreamHandler {
   private llmClient: OpenRouterClient | null = null;
   private ttsClient: DeepgramTTS | null = null;
   private agentService: AgentService;
+  private knowledgeService: KnowledgeService;
+  private toolService: ToolService;
+  private callService: CallService;
+  private messageService: MessageService;
+  private toolEventService: ToolEventService;
 
   constructor() {
     this.agentService = new AgentService();
+    this.knowledgeService = new KnowledgeService();
+    this.toolService = new ToolService();
+    this.callService = new CallService();
+    this.messageService = new MessageService();
+    this.toolEventService = new ToolEventService();
     
     if (OPENROUTER_API_KEY) {
       this.llmClient = new OpenRouterClient({
@@ -145,6 +164,7 @@ export class StreamHandler {
     const { callSid, accountSid, tracks, mediaFormat, customParameters } = start;
 
     const toPhoneNumber = customParameters?.toPhoneNumber;
+    const fromPhoneNumber = customParameters?.fromPhoneNumber;
 
     const audioQueue = new AudioQueue(1000);
 
@@ -176,6 +196,7 @@ export class StreamHandler {
       encoding: mediaFormat.encoding,
       sampleRate: mediaFormat.sampleRate,
       toPhoneNumber,
+      fromPhoneNumber,
     });
 
     if (toPhoneNumber) {
@@ -184,14 +205,30 @@ export class StreamHandler {
       logger.warn('No toPhoneNumber provided, agent loading skipped', { callSid });
     }
 
+    try {
+      const phoneForCall = fromPhoneNumber || toPhoneNumber || 'unknown';
+      const agentId = session.agent?.id;
+      const callRecord = await this.callService.createCall({
+        callSid,
+        phone: phoneForCall,
+        agentId,
+      });
+      session.callId = callRecord.id;
+    } catch (error) {
+      logger.error('Failed to create call analytics record', {
+        callSid,
+        error,
+      });
+    }
+
     if (DEBUG_AUDIO) {
       this.initDebugRecording(callSid);
     }
 
-    if (DEEPGRAM_API_KEY) {
-      await this.initDeepgramStream(session, connectionId);
+    if (DEEPGRAM_API_KEY || SARVAM_API_KEY) {
+      await this.initSttStream(session, connectionId);
     } else {
-      logger.warn('DEEPGRAM_API_KEY not set, STT disabled', { callSid });
+      logger.warn('No STT API key set, STT disabled', { callSid });
     }
   }
 
@@ -218,6 +255,15 @@ export class StreamHandler {
           this.llmClient.setSystemPrompt(agent.systemPrompt);
           this.llmClient.setTemperature(agent.temperature);
         }
+
+        try {
+          await this.toolService.loadToolsForAgent(agent.id);
+        } catch (error) {
+          logger.error('Failed to load tools for agent', {
+            agentId: agent.id,
+            error,
+          });
+        }
       } else {
         logger.warn('No agent configured for phone number', {
           callSid: session.callSid,
@@ -231,6 +277,48 @@ export class StreamHandler {
         error,
       });
     }
+  }
+
+  private async initSttStream(session: CallSession, connectionId: string): Promise<void> {
+    const provider = session.agent?.sttProvider ?? 'DEEPGRAM';
+
+    if (provider === 'SARVAM') {
+      if (!SARVAM_API_KEY) {
+        logger.warn('SARVAM_API_KEY not set, falling back to Deepgram', {
+          callSid: session.callSid,
+        });
+        return this.initDeepgramStream(session, connectionId);
+      }
+
+      try {
+        const sarvamStream = new SarvamStream(session.callSid, {
+          apiKey: SARVAM_API_KEY,
+          encoding: 'mulaw',
+          sampleRate: 8000,
+          channels: 1,
+        });
+
+        sarvamStream.onTranscript((result: TranscriptResult) => {
+          this.handleTranscript(session.callSid, result);
+        });
+
+        await sarvamStream.connect();
+        session.sttStream = sarvamStream;
+
+        logger.info('Sarvam stream initialized', { callSid: session.callSid });
+
+        this.startAudioStreamingLoop(session, connectionId);
+      } catch (error) {
+        logger.error('Failed to initialize Sarvam stream', {
+          callSid: session.callSid,
+          error,
+        });
+      }
+
+      return;
+    }
+
+    await this.initDeepgramStream(session, connectionId);
   }
 
   private async initDeepgramStream(session: CallSession, connectionId: string): Promise<void> {
@@ -295,12 +383,12 @@ export class StreamHandler {
     });
 
     if (result.isFinal && result.text.trim()) {
-      await this.handleFinalTranscript(callSid, result.text);
+      await this.handleFinalTranscript(callSid, result.text, result.confidence);
     }
   }
 
   /**
-   * Handle FINAL transcripts by triggering LLM reasoning
+   * Handle FINAL transcripts by triggering LLM reasoning + tools
    * 
    * Phase 3 Pipeline:
    * 1. User speaks → Deepgram transcribes (FINAL)
@@ -315,13 +403,13 @@ export class StreamHandler {
    * - Multiple calls can run concurrently without interference
    * - Async/await ensures non-blocking operation
    */
-  private async handleFinalTranscript(callSid: string, text: string): Promise<void> {
+  private async handleFinalTranscript(callSid: string, text: string, confidence?: number): Promise<void> {
     if (!this.llmClient) {
       logger.debug('LLM client not available, skipping response generation', { callSid });
       return;
     }
 
-    const session = Array.from(this.sessions.values()).find(s => s.callSid === callSid);
+    const session = Array.from(this.sessions.values()).find((s) => s.callSid === callSid);
     
     if (!session) {
       logger.warn('Session not found for final transcript', { callSid });
@@ -336,17 +424,141 @@ export class StreamHandler {
 
     session.conversationHistory.push(userMessage);
 
+    if (session.callId) {
+      try {
+        await this.messageService.storeMessage(session.callId, 'user', text, confidence);
+      } catch (error) {
+        logger.error('Failed to persist user message', {
+          callSid,
+          callId: session.callId,
+          error,
+        });
+      }
+    }
+
     try {
-      const llmMessages: Message[] = session.conversationHistory.map(msg => ({
+      const historyMessages: Message[] = session.conversationHistory.map((msg) => ({
         role: msg.role,
         content: msg.content,
       }));
 
-      const aiResponse = await this.llmClient.generateResponse(
-        llmMessages,
-        session.agent?.systemPrompt,
-        session.agent?.temperature
-      );
+      let knowledgeContext: string | undefined;
+
+      if (session.agent) {
+        try {
+          const docs = await this.knowledgeService.searchRelevantDocs(session.agent.id, text, 3);
+          if (docs.length > 0) {
+            knowledgeContext = docs.map((d) => d.content).join('\n---\n');
+          }
+        } catch (error) {
+          logger.error('Knowledge retrieval failed', { callSid, error });
+        }
+      }
+
+      const systemPrompt = session.agent?.systemPrompt ?? this.llmClient.getSystemPrompt();
+
+      const baseMessages: Message[] = [
+        { role: 'system', content: systemPrompt },
+        ...(knowledgeContext
+          ? [
+              {
+                role: 'system',
+                content: `Knowledge Context:\n${knowledgeContext}`,
+              } as Message,
+            ]
+          : []),
+        ...historyMessages,
+      ];
+
+      const tools = session.agent
+        ? toolRegistry.getToolsForAgent(session.agent.id).map((tool) => ({
+            type: 'function',
+            function: {
+              name: tool.name,
+              description: tool.description,
+              parameters: tool.parameters,
+            },
+          }))
+        : [];
+
+      const firstResponse = await this.llmClient.generateChat({
+        messages: baseMessages,
+        temperature: session.agent?.temperature,
+        tools,
+      });
+
+      const firstChoice = firstResponse.choices[0];
+      const firstMessage = firstChoice.message;
+
+      let finalText: string | null = firstMessage.content ?? null;
+
+      if (firstMessage.tool_calls && firstMessage.tool_calls.length > 0 && session.agent) {
+        const toolMessages: Message[] = [];
+
+        for (const toolCall of firstMessage.tool_calls as OpenRouterToolCall[]) {
+          try {
+            const args = JSON.parse(toolCall.function.arguments || '{}');
+
+            const call = {
+              name: toolCall.function.name,
+              arguments: args as Record<string, unknown>,
+            };
+
+            const result = await toolExecutor.executeTool(session.agent.id, call);
+
+            const toolMessage: Message = {
+              role: 'tool',
+              content: JSON.stringify(result),
+              name: toolCall.function.name,
+              tool_call_id: toolCall.id,
+            };
+
+            toolMessages.push(toolMessage);
+
+            if (session.callId) {
+              try {
+                await this.toolEventService.storeToolEvent(
+                  session.callId,
+                  toolCall.function.name,
+                  args,
+                  result,
+                );
+              } catch (error) {
+                logger.error('Failed to persist tool event', {
+                  callSid,
+                  callId: session.callId,
+                  toolName: toolCall.function.name,
+                  error,
+                });
+              }
+            }
+          } catch (error) {
+            logger.error('Failed to execute tool from LLM', {
+              callSid,
+              error,
+            });
+          }
+        }
+
+        const followupMessages: Message[] = [
+          ...baseMessages,
+          {
+            role: 'assistant',
+            content: firstMessage.content ?? '',
+          },
+          ...toolMessages,
+        ];
+
+        const secondResponse = await this.llmClient.generateChat({
+          messages: followupMessages,
+          temperature: session.agent?.temperature,
+        });
+
+        const secondChoice = secondResponse.choices[0];
+        finalText = secondChoice.message.content ?? '';
+      }
+
+      const aiResponse = finalText ?? '';
 
       const assistantMessage: ConversationMessage = {
         role: 'assistant',
@@ -355,6 +567,18 @@ export class StreamHandler {
       };
 
       session.conversationHistory.push(assistantMessage);
+
+      if (session.callId) {
+        try {
+          await this.messageService.storeMessage(session.callId, 'assistant', aiResponse);
+        } catch (error) {
+          logger.error('Failed to persist assistant message', {
+            callSid,
+            callId: session.callId,
+            error,
+          });
+        }
+      }
 
       logger.info('[AI_RESPONSE]', {
         callSid,
@@ -485,8 +709,19 @@ export class StreamHandler {
     logger.info('Call stream ended', {
       callSid: session.callSid,
       streamSid: session.streamSid,
-      duration: `${Math.floor(duration / 1000)}s`,
+      durationMs: duration,
     });
+
+    if (session.callSid) {
+      try {
+        await this.callService.endCall(session.callSid);
+      } catch (error) {
+        logger.error('Failed to end call analytics record', {
+          callSid: session.callSid,
+          error,
+        });
+      }
+    }
 
     await this.cleanupSession(connectionId);
   }

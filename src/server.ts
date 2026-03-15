@@ -6,6 +6,7 @@ import { createServer } from 'http';
 import { VoiceGateway } from './voiceGateway/gateway';
 import { TwiMLController } from './twilio/twimlController';
 import { createLogger } from './utils/logger';
+import { KnowledgeService } from './knowledge/knowledgeService';
 
 const logger = createLogger('Server');
 
@@ -50,6 +51,8 @@ const server = createServer(app);
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 
+const knowledgeService = new KnowledgeService();
+
 /**
  * Initialize core components:
  * 
@@ -86,6 +89,24 @@ app.get('/health', (_req: Request, res: Response) => {
     uptime: process.uptime(),
     ...metrics,
   });
+});
+
+app.post('/agents/:agentId/knowledge', async (req: Request, res: Response) => {
+  const { agentId } = req.params;
+  const { content } = req.body as { content?: string };
+
+  if (!content || typeof content !== 'string' || !content.trim()) {
+    res.status(400).json({ error: 'content is required' });
+    return;
+  }
+
+  try {
+    const document = await knowledgeService.addDocument(agentId, content);
+    res.status(201).json({ id: document.id });
+  } catch (error) {
+    logger.error('Failed to add knowledge document', error);
+    res.status(500).json({ error: 'Failed to add knowledge document' });
+  }
 });
 
 const gracefulShutdown = async () => {

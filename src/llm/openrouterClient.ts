@@ -3,8 +3,10 @@ import { createLogger } from '../utils/logger';
 const logger = createLogger('OpenRouterClient');
 
 export interface Message {
-  role: 'system' | 'user' | 'assistant';
+  role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
+  name?: string;
+  tool_call_id?: string;
 }
 
 export interface OpenRouterConfig {
@@ -12,14 +14,26 @@ export interface OpenRouterConfig {
   model?: string;
 }
 
+export interface OpenRouterToolCall {
+  id: string;
+  type: 'function';
+  function: {
+    name: string;
+    arguments: string;
+  };
+}
+
+export interface OpenRouterChoiceMessage {
+  role: string;
+  content: string | null;
+  tool_calls?: OpenRouterToolCall[];
+}
+
 export interface OpenRouterResponse {
   id: string;
   model: string;
   choices: Array<{
-    message: {
-      role: string;
-      content: string;
-    };
+    message: OpenRouterChoiceMessage;
     finish_reason: string;
   }>;
   usage?: {
@@ -63,40 +77,40 @@ export class OpenRouterClient {
     logger.info('OpenRouterClient initialized', { model: this.model });
   }
 
-  async generateResponse(
-    conversationHistory: Message[], 
-    systemPrompt?: string,
-    temperature?: number
-  ): Promise<string> {
-    const messages: Message[] = [
-      { role: 'system', content: systemPrompt || this.systemPrompt },
-      ...conversationHistory,
-    ];
-
-    const requestBody = {
+  async generateChat(request: {
+    messages: Message[];
+    temperature?: number;
+    tools?: any[];
+  }): Promise<OpenRouterResponse> {
+    const body: any = {
       model: this.model,
-      messages,
-      temperature: temperature ?? this.temperature,
+      messages: request.messages,
+      temperature: request.temperature ?? this.temperature,
     };
 
+    if (request.tools && request.tools.length > 0) {
+      body.tools = request.tools;
+      body.tool_choice = 'auto';
+    }
+
     try {
-      logger.debug('Sending request to OpenRouter', {
+      logger.debug('Sending chat request to OpenRouter', {
         model: this.model,
-        messageCount: messages.length,
-        temperature: requestBody.temperature,
-        apiKeyPrefix: this.apiKey.substring(0, 15),
+        messageCount: request.messages.length,
+        temperature: body.temperature,
+        hasTools: Boolean(request.tools && request.tools.length),
       });
 
       const response = await fetch(this.apiUrl, {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${this.apiKey}`,
+          Authorization: `Bearer ${this.apiKey}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(requestBody),
+        body: JSON.stringify(body),
       });
 
-      logger.debug('OpenRouter response status', {
+      logger.debug('OpenRouter chat response status', {
         status: response.status,
         statusText: response.statusText,
       });
@@ -106,31 +120,60 @@ export class OpenRouterClient {
         throw new Error(`OpenRouter API error: ${response.status} - ${errorText}`);
       }
 
-      const data = await response.json() as OpenRouterResponse;
+      const data = (await response.json()) as OpenRouterResponse;
 
       if (!data.choices || data.choices.length === 0) {
         throw new Error('No response choices returned from OpenRouter');
       }
 
-      const assistantMessage = data.choices[0].message.content;
-
-      logger.debug('Received response from OpenRouter', {
-        model: data.model,
-        tokensUsed: data.usage?.total_tokens,
-        responseLength: assistantMessage.length,
-      });
-
-      return assistantMessage;
+      return data;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       const errorStack = error instanceof Error ? error.stack : undefined;
-      logger.error('Failed to generate LLM response', { 
+      logger.error('Failed to generate LLM chat response', {
         error: errorMessage,
         stack: errorStack,
-        type: error instanceof Error ? error.constructor.name : typeof error
+        type: error instanceof Error ? error.constructor.name : typeof error,
       });
       throw error;
     }
+  }
+
+  async generateResponse(
+    conversationHistory: Message[], 
+    systemPrompt?: string,
+    temperature?: number,
+    knowledgeContext?: string
+  ): Promise<string> {
+    const knowledgeMessages: Message[] = knowledgeContext
+      ? [
+          {
+            role: 'system',
+            content: `Knowledge Context:\n${knowledgeContext}`,
+          },
+        ]
+      : [];
+
+    const messages: Message[] = [
+      { role: 'system', content: systemPrompt || this.systemPrompt },
+      ...knowledgeMessages,
+      ...conversationHistory,
+    ];
+
+    const data = await this.generateChat({
+      messages,
+      temperature: temperature ?? this.temperature,
+    });
+
+    const assistantMessage = data.choices[0].message.content ?? '';
+
+    logger.debug('Received response from OpenRouter', {
+      model: data.model,
+      tokensUsed: data.usage?.total_tokens,
+      responseLength: assistantMessage.length,
+    });
+
+    return assistantMessage;
   }
 
   setSystemPrompt(prompt: string): void {

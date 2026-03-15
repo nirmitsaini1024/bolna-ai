@@ -21,10 +21,24 @@ async function main() {
       systemPrompt: 'You are a friendly ecommerce support assistant. Help customers with their orders, products, and general inquiries. Be concise and helpful.',
       voice: 'aura-asteria-en',
       temperature: 0.3,
+      sttProvider: 'DEEPGRAM',
     },
   });
 
   console.log('✅ Created agent:', supportAgent.name);
+
+  await prisma.knowledgeDocument.upsert({
+    where: { id: 'kb-return-policy-1' },
+    update: {},
+    create: {
+      id: 'kb-return-policy-1',
+      agentId: supportAgent.id,
+      content: 'Our return policy allows returns within 30 days.',
+      embedding: [],
+    },
+  });
+
+  console.log('✅ Seeded example knowledge document: return policy');
 
   const twilioNumber = process.env.TWILIO_NUMBER;
   

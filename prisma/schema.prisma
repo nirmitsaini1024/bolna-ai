@@ -6,14 +6,22 @@ datasource db {
   provider = "postgresql"
 }
 
+enum SttProvider {
+  DEEPGRAM
+  SARVAM
+}
+
 model Agent {
-  id           String        @id @default(uuid())
-  name         String
-  systemPrompt String
-  voice        String
-  temperature  Float         @default(0.3)
-  createdAt    DateTime      @default(now())
-  phoneNumbers PhoneNumber[]
+  id                 String              @id @default(uuid())
+  name               String
+  systemPrompt       String
+  voice              String
+  temperature        Float               @default(0.3)
+  sttProvider        SttProvider         @default(DEEPGRAM)
+  createdAt          DateTime            @default(now())
+  phoneNumbers       PhoneNumber[]
+  knowledgeDocuments KnowledgeDocument[]
+  tools              Tool[]
 }
 
 model PhoneNumber {
@@ -21,4 +29,65 @@ model PhoneNumber {
   phoneNumber String @unique
   agentId     String
   agent       Agent  @relation(fields: [agentId], references: [id])
+}
+
+model KnowledgeDocument {
+  id        String   @id @default(uuid())
+  agentId   String
+  content   String
+  embedding Float[]
+  createdAt DateTime @default(now())
+
+  agent Agent @relation(fields: [agentId], references: [id])
+
+  @@index([agentId])
+}
+
+model Tool {
+  id          String   @id @default(uuid())
+  agentId     String
+  name        String
+  description String
+  parameters  Json
+  createdAt   DateTime @default(now())
+
+  agent Agent @relation(fields: [agentId], references: [id])
+
+  @@index([agentId])
+}
+
+model Call {
+  id        String   @id @default(uuid())
+  callSid   String   @unique
+  agentId   String?
+  phone     String
+  startedAt DateTime
+  endedAt   DateTime?
+  durationMs Int?
+  createdAt DateTime @default(now())
+
+  messages   Message[]
+  toolEvents ToolEvent[]
+}
+
+model Message {
+  id        String   @id @default(uuid())
+  callId    String
+  role      String
+  content   String
+  confidence Float?
+  createdAt DateTime @default(now())
+
+  call Call @relation(fields: [callId], references: [id])
+}
+
+model ToolEvent {
+  id        String   @id @default(uuid())
+  callId    String
+  toolName  String
+  arguments Json
+  result    Json
+  createdAt DateTime @default(now())
+
+  call Call @relation(fields: [callId], references: [id])
 }
