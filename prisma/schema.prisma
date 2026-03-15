@@ -1,0 +1,24 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Agent {
+  id           String        @id @default(uuid())
+  name         String
+  systemPrompt String
+  voice        String
+  temperature  Float         @default(0.3)
+  createdAt    DateTime      @default(now())
+  phoneNumbers PhoneNumber[]
+}
+
+model PhoneNumber {
+  id          String @id @default(uuid())
+  phoneNumber String @unique
+  agentId     String
+  agent       Agent  @relation(fields: [agentId], references: [id])
+}

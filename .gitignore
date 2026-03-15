@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.env
+*.log
+.DS_Store
+
+/src/generated/prisma
+
+dashboard/.next/
+dashboard/.env.local
+dashboard/out/
