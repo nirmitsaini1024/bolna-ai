@@ -171,6 +171,7 @@ export class StreamHandler {
 
     const toPhoneNumber = customParameters?.toPhoneNumber;
     const fromPhoneNumber = customParameters?.fromPhoneNumber;
+    const agentId = customParameters?.agentId;
 
     const audioQueue = new AudioQueue(1000);
 
@@ -245,19 +246,15 @@ export class StreamHandler {
       logger.warn('No phone number available for customer resolution', { callSid });
     }
 
-    if (toPhoneNumber) {
-      await this.loadAgentForSession(session);
-    } else {
-      logger.warn('No toPhoneNumber provided, agent loading skipped', { callSid });
-    }
+    await this.loadAgentForSession(session, agentId);
 
     try {
       const phoneForCall = fromPhoneNumber || toPhoneNumber || 'unknown';
-      const agentId = session.agent?.id;
+      const agentIdForCall = session.agent?.id;
       const callRecord = await this.callService.createCall({
         callSid,
         phone: phoneForCall,
-        agentId,
+        agentId: agentIdForCall,
       });
       session.callId = callRecord.id;
 
@@ -291,48 +288,80 @@ export class StreamHandler {
     }
   }
 
-  private async loadAgentForSession(session: CallSession): Promise<void> {
-    if (!session.toPhoneNumber) {
-      return;
-    }
-
+  private async loadAgentForSession(session: CallSession, agentIdFromParams?: string): Promise<void> {
     try {
-      const agent = await this.agentService.getAgentByPhoneNumber(session.toPhoneNumber);
-      
-      if (agent) {
-        session.agent = agent;
-        
-        logger.info('[AGENT_LOADED]', {
-          callSid: session.callSid,
-          agentId: agent.id,
-          agentName: agent.name,
-          voice: agent.voice,
-          temperature: agent.temperature,
-        });
+      let agent = null;
 
-        if (this.llmClient) {
-          this.llmClient.setSystemPrompt(agent.systemPrompt);
-          this.llmClient.setTemperature(agent.temperature);
-        }
+      if (agentIdFromParams) {
+        agent = await this.agentService.getAgentById(agentIdFromParams);
 
-        try {
-          await this.toolService.loadToolsForAgent(agent.id);
-        } catch (error) {
-          logger.error('Failed to load tools for agent', {
-            agentId: agent.id,
-            error,
+        if (!agent) {
+          logger.warn('No agent found for agentId from stream parameters', {
+            callSid: session.callSid,
+            agentId: agentIdFromParams,
           });
         }
-      } else {
-        logger.warn('No agent configured for phone number', {
+      }
+
+      if (!agent && session.toPhoneNumber) {
+        agent = await this.agentService.getAgentByPhoneNumber(session.toPhoneNumber);
+      }
+
+      if (!agent) {
+        logger.warn('No agent configured for session', {
           callSid: session.callSid,
           toPhoneNumber: session.toPhoneNumber,
+          agentIdFromParams,
+        });
+        return;
+      }
+
+      session.agent = agent;
+      session.agentConfig = agent;
+
+      session.interruptWords = agent.interruptWords ?? 2;
+      session.silenceTimeout = agent.silenceTimeout ?? 30;
+      session.maxCallDuration = agent.maxCallDuration ?? 600;
+      session.responseLatency = agent.responseLatency ?? 0;
+      session.endpointingMs = agent.endpointingMs ?? 1000;
+      session.finalCallMessage = agent.finalCallMessage ?? undefined;
+
+      logger.info('[AGENT_LOADED]', {
+        callSid: session.callSid,
+        agentId: agent.id,
+        agentName: agent.name,
+        voice: agent.voice,
+        temperature: agent.temperature,
+      });
+
+      logger.info('[AGENT_CONFIG_LOADED]', {
+        callSid: session.callSid,
+        agentId: agent.id,
+        voice: agent.voice,
+        sttProvider: agent.sttProvider,
+        language: agent.language,
+        interruptWords: agent.interruptWords,
+        silenceTimeout: agent.silenceTimeout,
+      });
+
+      if (this.llmClient) {
+        this.llmClient.setSystemPrompt(agent.systemPrompt);
+        this.llmClient.setTemperature(agent.temperature ?? 0.3);
+      }
+
+      try {
+        await this.toolService.loadToolsForAgent(agent.id);
+      } catch (error) {
+        logger.error('Failed to load tools for agent', {
+          agentId: agent.id,
+          error,
         });
       }
     } catch (error) {
-      logger.error('Failed to load agent', {
+      logger.error('Failed to load agent for session', {
         callSid: session.callSid,
         toPhoneNumber: session.toPhoneNumber,
+        agentIdFromParams,
         error,
       });
     }
@@ -571,7 +600,7 @@ export class StreamHandler {
 
       const firstResponse = await this.llmClient.generateChat({
         messages: baseMessages,
-        temperature: session.agent?.temperature,
+        temperature: session.agent?.temperature ?? undefined,
         tools,
       });
 
@@ -643,7 +672,7 @@ export class StreamHandler {
 
         const secondResponse = await this.llmClient.generateChat({
           messages: followupMessages,
-          temperature: session.agent?.temperature,
+          temperature: session.agent?.temperature ?? undefined,
         });
 
         const secondChoice = secondResponse.choices[0];

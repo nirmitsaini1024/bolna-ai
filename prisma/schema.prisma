@@ -12,14 +12,45 @@ enum SttProvider {
 }
 
 model Agent {
-  id                 String              @id @default(uuid())
-  organizationId     String?
-  name               String
-  systemPrompt       String
-  voice              String
-  temperature        Float               @default(0.3)
-  sttProvider        SttProvider         @default(DEEPGRAM)
-  createdAt          DateTime            @default(now())
+  id               String   @id @default(uuid())
+  organizationId   String?
+
+  name             String
+  systemPrompt     String
+  welcomeMessage   String?
+
+  llmModel         String?
+  temperature      Float?   @default(0.3)
+  maxTokens        Int?
+
+  sttProvider      SttProvider @default(DEEPGRAM)
+  sttModel         String?
+  language         String?
+
+  ttsProvider      String?
+  voice            String?
+  speechRate       Float?
+  stability        Float?
+  similarityBoost  Float?
+  styleExaggeration Float?
+
+  interruptWords   Int?
+  responseLatency  Int?
+  endpointingMs    Int?
+
+  silenceTimeout   Int?
+  maxCallDuration  Int?
+  finalCallMessage String?
+
+  telephonyProvider String?
+
+  noiseCancellation  Boolean @default(false)
+  voicemailDetection Boolean @default(false)
+  autoReschedule     Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt @default(now())
+
   phoneNumbers       PhoneNumber[]
   knowledgeDocuments KnowledgeDocument[]
   tools              Tool[]

@@ -77,8 +77,35 @@ export class AgentRepository {
   async createAgent(data: {
     name: string;
     systemPrompt: string;
-    voice: string;
-    temperature?: number;
+    welcomeMessage?: string | null;
+    llmModel?: string | null;
+    temperature?: number | null;
+    maxTokens?: number | null;
+
+    sttProvider?: Agent['sttProvider'];
+    sttModel?: string | null;
+    language?: string | null;
+
+    ttsProvider?: string | null;
+    voice?: string | null;
+    speechRate?: number | null;
+    stability?: number | null;
+    similarityBoost?: number | null;
+    styleExaggeration?: number | null;
+
+    interruptWords?: number | null;
+    responseLatency?: number | null;
+    endpointingMs?: number | null;
+
+    silenceTimeout?: number | null;
+    maxCallDuration?: number | null;
+    finalCallMessage?: string | null;
+
+    telephonyProvider?: string | null;
+
+    noiseCancellation?: boolean;
+    voicemailDetection?: boolean;
+    autoReschedule?: boolean;
   }): Promise<Agent> {
     try {
       const agent = await this.prisma.agent.create({
@@ -93,6 +120,41 @@ export class AgentRepository {
       return agent;
     } catch (error) {
       logger.error('Failed to create agent', { data, error });
+      throw error;
+    }
+  }
+
+  async updateAgent(
+    agentId: string,
+    updates: Partial<Agent>
+  ): Promise<Agent> {
+    try {
+      const agent = await this.prisma.agent.update({
+        where: { id: agentId },
+        data: updates,
+      });
+
+      logger.info('Agent updated', {
+        agentId: agent.id,
+        name: agent.name,
+      });
+
+      return agent;
+    } catch (error) {
+      logger.error('Failed to update agent', { agentId, updates, error });
+      throw error;
+    }
+  }
+
+  async deleteAgent(agentId: string): Promise<void> {
+    try {
+      await this.prisma.agent.delete({
+        where: { id: agentId },
+      });
+
+      logger.info('Agent deleted', { agentId });
+    } catch (error) {
+      logger.error('Failed to delete agent', { agentId, error });
       throw error;
     }
   }

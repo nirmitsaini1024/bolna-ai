@@ -68,7 +68,7 @@ export class TwiMLController {
       }
     }
 
-    const twiml = this.generateStreamTwiML(To, agentId);
+    const twiml = this.generateStreamTwiML(To ?? '', agentId);
     
     res.type('text/xml');
     res.send(twiml);

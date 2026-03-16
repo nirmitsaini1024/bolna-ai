@@ -2,66 +2,34 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-
-interface Call {
-  id: string;
-  callSid: string;
-  streamSid: string;
-  from: string;
-  to: string;
-  status: string;
-  startTime: string;
-  endTime?: string;
-  duration?: number;
-}
+import { bolnaAPI, Call } from '../../lib/api';
 
 export default function CallsPage() {
   const [calls, setCalls] = useState<Call[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const mockCalls: Call[] = [
-      {
-        id: '1',
-        callSid: 'CA123456789',
-        streamSid: 'MZ987654321',
-        from: '+1234567890',
-        to: '+10000000000',
-        status: 'completed',
-        startTime: new Date(Date.now() - 3600000).toISOString(),
-        endTime: new Date(Date.now() - 3000000).toISOString(),
-        duration: 600,
-      },
-      {
-        id: '2',
-        callSid: 'CA987654321',
-        streamSid: 'MZ123456789',
-        from: '+9876543210',
-        to: '+10000000000',
-        status: 'completed',
-        startTime: new Date(Date.now() - 7200000).toISOString(),
-        endTime: new Date(Date.now() - 6900000).toISOString(),
-        duration: 300,
-      },
-      {
-        id: '3',
-        callSid: 'CA456789123',
-        streamSid: 'MZ456789123',
-        from: '+1122334455',
-        to: '+10000000000',
-        status: 'in-progress',
-        startTime: new Date(Date.now() - 120000).toISOString(),
-      },
-    ];
+    const loadCalls = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const data = await bolnaAPI.getCalls();
+        setCalls(data);
+      } catch (err) {
+        console.error(err);
+        setError('Failed to load calls');
+      } finally {
+        setLoading(false);
+      }
+    };
 
-    setTimeout(() => {
-      setCalls(mockCalls);
-      setLoading(false);
-    }, 500);
+    loadCalls();
   }, []);
 
-  const formatDuration = (seconds?: number) => {
-    if (!seconds) return '-';
+  const formatDuration = (durationMs?: number | null) => {
+    if (!durationMs) return '-';
+    const seconds = Math.floor(durationMs / 1000);
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
     return `${mins}:${secs.toString().padStart(2, '0')}`;
@@ -113,17 +81,19 @@ export default function CallsPage() {
           <div className="flex h-64 items-center justify-center">
             <div className="h-12 w-12 animate-spin rounded-full border-4 border-purple-500 border-t-transparent"></div>
           </div>
+        ) : error ? (
+          <div className="flex h-64 items-center justify-center text-red-400 text-sm">
+            {error}
+          </div>
         ) : (
           <div className="rounded-xl border border-white/10 bg-white/5 backdrop-blur-sm overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full">
                 <thead className="bg-white/5">
                   <tr>
-                    <th className="px-6 py-4 text-left text-sm font-semibold text-gray-300">Call SID</th>
-                    <th className="px-6 py-4 text-left text-sm font-semibold text-gray-300">From</th>
-                    <th className="px-6 py-4 text-left text-sm font-semibold text-gray-300">To</th>
-                    <th className="px-6 py-4 text-left text-sm font-semibold text-gray-300">Status</th>
-                    <th className="px-6 py-4 text-left text-sm font-semibold text-gray-300">Start Time</th>
+                    <th className="px-6 py-4 text-left text-sm font-semibold text-gray-300">Phone</th>
+                    <th className="px-6 py-4 text-left text-sm font-semibold text-gray-300">Agent</th>
+                    <th className="px-6 py-4 text-left text-sm font-semibold text-gray-300">Created At</th>
                     <th className="px-6 py-4 text-left text-sm font-semibold text-gray-300">Duration</th>
                     <th className="px-6 py-4 text-left text-sm font-semibold text-gray-300">Actions</th>
                   </tr>
@@ -132,29 +102,22 @@ export default function CallsPage() {
                   {calls.map((call) => (
                     <tr key={call.id} className="transition hover:bg-white/5">
                       <td className="px-6 py-4">
-                        <div className="font-mono text-sm text-white">{call.callSid}</div>
+                        <div className="font-mono text-sm text-white">{call.phone}</div>
                       </td>
-                      <td className="px-6 py-4 text-gray-300">{call.from}</td>
-                      <td className="px-6 py-4 text-gray-300">{call.to}</td>
+                      <td className="px-6 py-4 text-gray-300">{call.agentId ?? '-'}</td>
+                      <td className="px-6 py-4 text-gray-300">
+                        {formatDateTime(call.createdAt)}
+                      </td>
+                      <td className="px-6 py-4 text-gray-300">
+                        {formatDuration(call.durationMs)}
+                      </td>
                       <td className="px-6 py-4">
-                        <span
-                          className={`rounded-full px-3 py-1 text-xs font-medium ${
-                            call.status === 'completed'
-                              ? 'bg-green-500/20 text-green-400'
-                              : call.status === 'in-progress'
-                              ? 'bg-blue-500/20 text-blue-400'
-                              : 'bg-red-500/20 text-red-400'
-                          }`}
+                        <Link
+                          href={`/calls/${call.id}`}
+                          className="rounded-lg bg-purple-500/20 px-4 py-2 text-sm text-purple-400 transition hover:bg-purple-500/30"
                         >
-                          {call.status}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4 text-gray-300">{formatDateTime(call.startTime)}</td>
-                      <td className="px-6 py-4 text-gray-300">{formatDuration(call.duration)}</td>
-                      <td className="px-6 py-4">
-                        <button className="rounded-lg bg-purple-500/20 px-4 py-2 text-sm text-purple-400 transition hover:bg-purple-500/30">
-                          View Details
-                        </button>
+                          View Transcript
+                        </Link>
                       </td>
                     </tr>
                   ))}
@@ -175,18 +138,21 @@ export default function CallsPage() {
             <div className="text-3xl font-bold text-white">
               {formatDuration(
                 Math.floor(
-                  calls.reduce((acc, call) => acc + (call.duration || 0), 0) / calls.filter((c) => c.duration).length
+                  calls.reduce((acc, call) => acc + (call.durationMs || 0), 0) /
+                    Math.max(1, calls.filter((c) => c.durationMs).length)
                 )
               )}
             </div>
             <div className="mt-2 text-sm text-blue-400">Typical conversation</div>
           </div>
           <div className="rounded-xl border border-white/10 bg-white/5 p-6 backdrop-blur-sm">
-            <div className="mb-2 text-sm font-medium text-gray-400">Success Rate</div>
+            <div className="mb-2 text-sm font-medium text-gray-400">Total Duration</div>
             <div className="text-3xl font-bold text-white">
-              {Math.round((calls.filter((c) => c.status === 'completed').length / calls.length) * 100)}%
+              {formatDuration(
+                calls.reduce((acc, call) => acc + (call.durationMs || 0), 0)
+              )}
             </div>
-            <div className="mt-2 text-sm text-green-400">Excellent performance</div>
+            <div className="mt-2 text-sm text-green-400">Across all calls</div>
           </div>
         </div>
       </main>

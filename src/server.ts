@@ -2,6 +2,7 @@ import { config } from 'dotenv';
 config();
 
 import express, { Request, Response } from 'express';
+import cors from 'cors';
 import { createServer } from 'http';
 import { VoiceGateway } from './voiceGateway/gateway';
 import { TwiMLController } from './twilio/twimlController';
@@ -10,6 +11,7 @@ import { KnowledgeService } from './knowledge/knowledgeService';
 import { AuthController } from './auth/authController';
 import { jwtMiddleware, AuthenticatedRequest } from './auth/jwtMiddleware';
 import { BillingService } from './billing/billingService';
+import { AgentController } from './agents/agentController';
 import { OutboundController } from './outbound/outboundController';
 
 const logger = createLogger('Server');
@@ -55,9 +57,16 @@ const server = createServer(app);
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 
+app.use(
+  cors({
+    origin: process.env.DASHBOARD_ORIGIN || 'http://localhost:3001',
+  })
+);
+
 const knowledgeService = new KnowledgeService();
 const authController = new AuthController();
 const billingService = new BillingService();
+const agentController = new AgentController();
 
 /**
  * Initialize core components:
@@ -106,13 +115,41 @@ app.get('/health', (_req: Request, res: Response) => {
   });
 });
 
+app.get('/agents', async (req: Request, res: Response) => {
+  await agentController.listAgents(req, res);
+});
+
+app.post('/agents', async (req: Request, res: Response) => {
+  await agentController.createAgent(req, res);
+});
+
+app.put('/agents/:id', async (req: Request, res: Response) => {
+  await agentController.updateAgent(req, res);
+});
+
+app.delete('/agents/:id', async (req: Request, res: Response) => {
+  await agentController.deleteAgent(req, res);
+});
+
 app.post('/outbound/call', async (req: Request, res: Response) => {
+  await outboundController.createOutboundCall(req, res);
+});
+
+app.post('/call', async (req: Request, res: Response) => {
+  const { to, agentId } = req.body as { to?: string; agentId?: string };
+
+  if (!to || !agentId) {
+    res.status(400).json({ error: 'to and agentId are required' });
+    return;
+  }
+
+  // Reuse outbound controller logic by adapting the payload shape
+  (req as any).body = { phone: to, agentId };
   await outboundController.createOutboundCall(req, res);
 });
 
 app.post('/agents/:agentId/knowledge', jwtMiddleware, async (req: Request, res: Response) => {
   const { agentId } = req.params;
-  const { user } = req as AuthenticatedRequest;
   const { content } = req.body as { content?: string };
 
   if (!content || typeof content !== 'string' || !content.trim()) {

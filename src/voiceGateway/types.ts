@@ -131,12 +131,20 @@ export interface CallSession {
   isSpeaking: boolean;
   ttsAbortController?: AbortController;
   agent?: Agent;
+  agentConfig?: Agent;
   toPhoneNumber?: string;
   fromPhoneNumber?: string;
   customerHistorySummary?: string;
   sttSeconds?: number;
   ttsSeconds?: number;
   llmTokens?: number;
+
+  interruptWords?: number;
+  silenceTimeout?: number;
+  maxCallDuration?: number;
+  responseLatency?: number;
+  endpointingMs?: number;
+  finalCallMessage?: string;
 }
 
 /**

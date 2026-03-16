@@ -1,34 +1,144 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { bolnaAPI, Agent as ApiAgent, ToolConfig, KnowledgeDocument } from '../lib/api';
 
-interface Agent {
-  id: string;
-  name: string;
-  status: 'draft' | 'active';
+type AgentStatus = 'draft' | 'active';
+type TabId = 'agent' | 'llm' | 'audio' | 'engine' | 'call' | 'tools' | 'analytics' | 'inbound';
+
+interface Agent extends ApiAgent {
+  status: AgentStatus;
+}
+
+interface KnowledgeBaseSectionProps {
+  agentId: string | null;
+}
+
+function KnowledgeBaseSection({ agentId }: KnowledgeBaseSectionProps) {
+  const [docs, setDocs] = useState<KnowledgeDocument[]>([]);
+  const [content, setContent] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const loadDocs = async () => {
+      if (!agentId) {
+        setDocs([]);
+        return;
+      }
+      setLoading(true);
+      setError(null);
+      try {
+        const data = await bolnaAPI.getKnowledgeDocs(agentId);
+        setDocs(data);
+      } catch (err) {
+        console.error(err);
+        setError('Failed to load knowledge documents');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadDocs();
+  }, [agentId]);
+
+  const handleUpload = async () => {
+    if (!agentId) {
+      alert('Select an agent first');
+      return;
+    }
+    const trimmed = content.trim();
+    if (!trimmed) {
+      alert('Document content cannot be empty');
+      return;
+    }
+
+    setSaving(true);
+    setError(null);
+    try {
+      const doc = await bolnaAPI.uploadKnowledgeDoc(agentId, trimmed);
+      setDocs((prev) => [doc, ...prev]);
+      setContent('');
+      alert('Knowledge document uploaded');
+    } catch (err) {
+      console.error(err);
+      setError('Failed to upload knowledge document');
+      alert('Failed to upload knowledge document');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <textarea
+        className="w-full rounded-md border border-gray-800 bg-[#020817] px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500 min-h-[96px]"
+        placeholder="Paste knowledge text or FAQ content..."
+        value={content}
+        onChange={(e) => setContent(e.target.value)}
+      />
+      <div className="flex items-center justify-between text-xs">
+        <button
+          className="inline-flex items-center rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed"
+          onClick={handleUpload}
+          disabled={saving || !agentId}
+        >
+          {saving ? 'Uploading...' : 'Upload document'}
+        </button>
+        {error && <span className="text-red-400">{error}</span>}
+      </div>
+      <div className="mt-2 max-h-40 space-y-1 overflow-y-auto rounded-md border border-gray-900 bg-[#020817] p-2 text-xs text-gray-400">
+        {loading ? (
+          <div>Loading documents...</div>
+        ) : docs.length === 0 ? (
+          <div>No documents uploaded yet.</div>
+        ) : (
+          docs.map((d) => (
+            <div key={d.id} className="flex items-center justify-between py-1">
+              <span className="truncate">
+                {d.content.length > 80 ? `${d.content.slice(0, 80)}…` : d.content}
+              </span>
+              <span className="ml-2 shrink-0 text-[10px] text-gray-500">
+                {new Date(d.createdAt).toLocaleDateString()}
+              </span>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
 }
 
 export default function Dashboard() {
+  const router = useRouter();
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedAgent, setSelectedAgent] = useState<Agent>({
-    id: '1',
-    name: '(v3) Cart Abandonment - E Comm',
-    status: 'draft'
-  });
-  const [agentName, setAgentName] = useState('(v3) Cart Abandonment - E Commerce - copy');
+  const [agents, setAgents] = useState<Agent[]>([]);
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const [agentName, setAgentName] = useState('');
+  const [welcomeMessage, setWelcomeMessage] = useState('');
+  const [systemPrompt, setSystemPrompt] = useState('');
   const [provider, setProvider] = useState('Azure');
-  const [model, setModel] = useState('gpt-4.1-mini-cluster');
-  const [temperature, setTemperature] = useState(0.75);
-  const [tokens, setTokens] = useState(373);
-  const [activeTab, setActiveTab] = useState('llm');
+  const [model, setModel] = useState('');
+  const [temperature, setTemperature] = useState(0.7);
+  const [tokens, setTokens] = useState(256);
+  const [voice, setVoice] = useState('');
+  const [ttsProvider, setTtsProvider] = useState('');
+  const [sttProvider, setSttProvider] = useState<'DEEPGRAM' | 'SARVAM'>('DEEPGRAM');
+  const [activeTab, setActiveTab] = useState<TabId>('llm');
   const [showNewAgentModal, setShowNewAgentModal] = useState(false);
+  const [tools, setTools] = useState<ToolConfig[]>([]);
+  const [userPhone, setUserPhone] = useState('');
 
-  const agents: Agent[] = [
-    { id: '1', name: '(v3) Cart Abandonment - E Commerce - copy', status: 'draft' },
-    { id: '2', name: 'New Agent', status: 'draft' }
-  ];
+  const [loadingAgents, setLoadingAgents] = useState(false);
+  const [savingAgent, setSavingAgent] = useState(false);
+  const [deletingAgent, setDeletingAgent] = useState(false);
+  const [loadingTools, setLoadingTools] = useState(false);
+  const [savingTools, setSavingTools] = useState(false);
+  const [callingAgent, setCallingAgent] = useState(false);
 
-  const tabs = [
+  const tabs: { id: TabId; label: string }[] = [
     { id: 'agent', label: 'Agent' },
     { id: 'llm', label: 'LLM' },
     { id: 'audio', label: 'Audio' },
@@ -38,6 +148,205 @@ export default function Dashboard() {
     { id: 'analytics', label: 'Analytics' },
     { id: 'inbound', label: 'Inbound' }
   ];
+
+  const selectedAgent = useMemo(
+    () => agents.find((a) => a.id === selectedAgentId) || null,
+    [agents, selectedAgentId]
+  );
+
+  const filteredAgents = useMemo(
+    () =>
+      agents.filter((agent) =>
+        (agent.name ?? '').toLowerCase().includes(searchQuery.toLowerCase())
+      ),
+    [agents, searchQuery]
+  );
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const token = localStorage.getItem('jwt');
+    if (!token) {
+      router.push('/login');
+    }
+  }, [router]);
+
+  const handleNewAgentClick = () => {
+    setSelectedAgentId(null);
+    setAgentName('');
+    setWelcomeMessage('');
+    setSystemPrompt('');
+    setModel('');
+    setTemperature(0.3);
+    setTokens(256);
+    setVoice('');
+    setTtsProvider('');
+    setShowNewAgentModal(true);
+  };
+
+  useEffect(() => {
+    const loadAgents = async () => {
+      setLoadingAgents(true);
+      try {
+        const list = await bolnaAPI.getAgents();
+        const normalized: Agent[] = list.map((a) => ({
+          ...a,
+          status: (a.status as AgentStatus) || 'draft',
+        }));
+        setAgents(normalized);
+        if (normalized.length > 0) {
+          setSelectedAgentId(normalized[0].id);
+        }
+      } catch (err) {
+        console.error(err);
+        alert('Failed to load agents');
+      } finally {
+        setLoadingAgents(false);
+      }
+    };
+
+    loadAgents();
+  }, []);
+
+  useEffect(() => {
+    if (!selectedAgent) return;
+    setAgentName(selectedAgent.name ?? '');
+    setWelcomeMessage(selectedAgent.welcomeMessage ?? '');
+    setSystemPrompt(selectedAgent.systemPrompt ?? '');
+    setModel(selectedAgent.llmModel ?? '');
+    setTemperature(
+      typeof selectedAgent.temperature === 'number' ? selectedAgent.temperature : 0.7
+    );
+    setTokens(
+      typeof selectedAgent.maxTokens === 'number' ? selectedAgent.maxTokens : 256
+    );
+    setVoice(selectedAgent.voice ?? '');
+    setTtsProvider(selectedAgent.ttsProvider ?? '');
+    setSttProvider(
+      (selectedAgent.sttProvider as 'DEEPGRAM' | 'SARVAM') || 'DEEPGRAM'
+    );
+  }, [selectedAgent]);
+
+  useEffect(() => {
+    const loadTools = async () => {
+      if (!selectedAgentId || activeTab !== 'tools') return;
+      setLoadingTools(true);
+      try {
+        const t = await bolnaAPI.getTools(selectedAgentId);
+        setTools(t);
+      } catch (err) {
+        console.error(err);
+        alert('Failed to load tools');
+      } finally {
+        setLoadingTools(false);
+      }
+    };
+
+    loadTools();
+  }, [selectedAgentId, activeTab]);
+
+  const handleSelectAgent = (agent: Agent) => {
+    setSelectedAgentId(agent.id);
+  };
+
+  const handleSaveAgent = async () => {
+    if (!agentName.trim()) {
+      alert('Agent name is required');
+      return;
+    }
+
+    setSavingAgent(true);
+    try {
+      const payload: Partial<Agent> = {
+        name: agentName,
+        welcomeMessage,
+        systemPrompt,
+        llmModel: model,
+        temperature,
+        maxTokens: tokens,
+        voice,
+        ttsProvider,
+        sttProvider,
+      };
+
+      let updated: Agent;
+      if (selectedAgent) {
+        updated = await bolnaAPI.updateAgent(selectedAgent.id, payload);
+        setAgents((prev) => prev.map((a) => (a.id === updated.id ? { ...a, ...updated } : a)));
+      } else {
+        updated = (await bolnaAPI.createAgent(payload)) as Agent;
+        setAgents((prev) => [...prev, updated]);
+        setSelectedAgentId(updated.id);
+      }
+
+      alert('Agent saved successfully');
+    } catch (err) {
+      console.error(err);
+      alert('Failed to save agent');
+    } finally {
+      setSavingAgent(false);
+    }
+  };
+
+  const handleDeleteAgent = async () => {
+    if (!selectedAgent) return;
+    if (!confirm('Delete this agent?')) return;
+
+    setDeletingAgent(true);
+    try {
+      await bolnaAPI.deleteAgent(selectedAgent.id);
+      setAgents((prev) => prev.filter((a) => a.id !== selectedAgent.id));
+      setSelectedAgentId(null);
+      alert('Agent deleted');
+    } catch (err) {
+      console.error(err);
+      alert('Failed to delete agent');
+    } finally {
+      setDeletingAgent(false);
+    }
+  };
+
+  const handleToggleTool = (toolId: string) => {
+    setTools((prev) =>
+      prev.map((t) => (t.id === toolId ? { ...t, enabled: !t.enabled } : t))
+    );
+  };
+
+  const handleSaveTools = async () => {
+    if (!selectedAgentId) return;
+    setSavingTools(true);
+    try {
+      const updated = await bolnaAPI.updateTool(selectedAgentId, tools);
+      setTools(updated);
+      alert('Tools updated');
+    } catch (err) {
+      console.error(err);
+      alert('Failed to update tools');
+    } finally {
+      setSavingTools(false);
+    }
+  };
+
+  const handleCallAgent = async () => {
+    if (!selectedAgentId) {
+      alert('Select an agent first');
+      return;
+    }
+    if (!userPhone.trim()) {
+      alert('Enter your phone number');
+      return;
+    }
+
+    setCallingAgent(true);
+    try {
+      await bolnaAPI.createTestCall(userPhone, selectedAgentId);
+      alert('Test call requested');
+    } catch (err) {
+      console.error(err);
+      alert('Failed to start test call');
+    } finally {
+      setCallingAgent(false);
+    }
+  };
 
   return (
     <div className="flex h-screen overflow-hidden bg-[#020817]">
@@ -56,7 +365,7 @@ export default function Dashboard() {
             </button>
             <button
               className="flex items-center gap-2 px-3 py-1.5 text-xs rounded-md bg-[#020617] border border-[#1f2937] hover:bg-[#020617]/90 text-gray-200 cursor-pointer"
-              onClick={() => setShowNewAgentModal(true)}
+              onClick={handleNewAgentClick}
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
                 <path d="M5 12h14"/>
@@ -82,12 +391,15 @@ export default function Dashboard() {
             />
           </div>
 
-          {agents.map((agent) => (
+          {loadingAgents && (
+            <div className="px-3 py-2 text-xs text-gray-400">Loading agents...</div>
+          )}
+          {filteredAgents.map((agent) => (
             <button
               key={agent.id}
-              onClick={() => setSelectedAgent(agent)}
+              onClick={() => handleSelectAgent(agent)}
               className={`w-full text-left px-3 py-2.5 rounded-lg border mb-2 transition-colors ${
-                selectedAgent.id === agent.id
+                selectedAgent && selectedAgent.id === agent.id
                   ? 'bg-[#111827] border-[#1f2937]'
                   : 'bg-[#020617] border-[#020617] hover:bg-[#111827]'
               }`}
@@ -155,6 +467,7 @@ export default function Dashboard() {
                   type="text"
                   value={agentName}
                   onChange={(e) => setAgentName(e.target.value)}
+                  placeholder="Agent name"
                   className="text-2xl font-bold bg-transparent border-0 text-white focus:outline-none focus:ring-0 p-0"
                 />
                 <button className="px-3 py-2 text-xs border border-gray-700 rounded-md hover:bg-white hover:text-blue-500 hover:ring-1 hover:ring-blue-500 transition-colors flex items-center gap-2">
@@ -198,12 +511,25 @@ export default function Dashboard() {
             
             <div className="col-span-3 flex flex-col items-end">
               <div className="flex w-full flex-col rounded-xl border border-[#1e293b] bg-[#020817] px-4 py-3 shadow-sm gap-2">
-                  <button className="w-full justify-center px-4 py-2 bg-[#2563eb] hover:bg-[#1d4ed8] text-white text-sm font-semibold rounded-lg transition-colors flex items-center gap-2">
+                <div className="mb-2 w-full">
+                  <input
+                    type="tel"
+                    placeholder="Your phone number"
+                    value={userPhone}
+                    onChange={(e) => setUserPhone(e.target.value)}
+                    className="w-full rounded-md border border-[#1e293b] bg-[#020817] px-3 py-2 text-xs text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                </div>
+                <button
+                  className="w-full justify-center px-4 py-2 bg-[#2563eb] hover:bg-[#1d4ed8] text-white text-sm font-semibold rounded-lg transition-colors flex items-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed"
+                  onClick={handleCallAgent}
+                  disabled={callingAgent}
+                >
                   <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4">
                     <polyline points="22 8 22 2 16 2"/><line x1="16" x2="22" y1="8" y2="2"/>
                     <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/>
                   </svg>
-                  Get call from agent
+                  {callingAgent ? 'Calling...' : 'Get call from agent'}
                 </button>
                 <button className="w-full justify-center px-4 py-2 bg-[#020617] hover:bg-[#020617]/90 text-white text-sm font-medium rounded-lg border border-[#1f2937] transition-colors flex items-center gap-2">
                   <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4">
@@ -256,7 +582,8 @@ export default function Dashboard() {
                     <div className="space-y-2">
                       <textarea
                         className="w-full rounded-md border border-gray-800 bg-[#020817] px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none min-h-[72px]"
-                        defaultValue={`Hello from Bolna\nYou can define variables using {variable_name}`}
+                        value={welcomeMessage}
+                        onChange={(e) => setWelcomeMessage(e.target.value)}
                       />
                     </div>
                   </div>
@@ -270,9 +597,8 @@ export default function Dashboard() {
                     </div>
                     <textarea
                       className="w-full rounded-md border border-gray-800 bg-[#020817] px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none min-h-[132px]"
-                      defaultValue={
-                        'You are a helpful agent. You will help the customer with their queries and doubts. You will never speak more than 2 sentences. Keep your responses concise.'
-                      }
+                      value={systemPrompt}
+                      onChange={(e) => setSystemPrompt(e.target.value)}
                     />
                     <div className="mt-3">
                       <label className="mb-1 block text-xs font-medium text-gray-400">
@@ -325,14 +651,31 @@ export default function Dashboard() {
                     <div className="grid grid-cols-2 gap-4 mb-4">
                       <div>
                         <label className="block text-sm text-gray-400 mb-2">Provider</label>
-                        <select className="w-full px-3 py-2 bg-[#020817] border border-gray-800 rounded-md text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500">
-                          <option>Deepgram</option>
+                        <select
+                          className="w-full px-3 py-2 bg-[#020817] border border-gray-800 rounded-md text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                          value={sttProvider}
+                          onChange={(e) =>
+                            setSttProvider(e.target.value === 'SARVAM' ? 'SARVAM' : 'DEEPGRAM')
+                          }
+                        >
+                          <option value="DEEPGRAM">Deepgram</option>
+                          <option value="SARVAM">Sarvam AI</option>
                         </select>
                       </div>
                       <div>
                         <label className="block text-sm text-gray-400 mb-2">Model</label>
                         <select className="w-full px-3 py-2 bg-[#020817] border border-gray-800 rounded-md text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500">
-                          <option>nova-3</option>
+                          {sttProvider === 'SARVAM' ? (
+                            <>
+                              <option value="saaras:realtime">saaras:realtime</option>
+                              <option value="saaras:streaming">saaras:streaming</option>
+                            </>
+                          ) : (
+                            <>
+                              <option value="nova-3">nova-3</option>
+                              <option value="nova-2">nova-2</option>
+                            </>
+                          )}
                         </select>
                       </div>
                     </div>
@@ -360,8 +703,13 @@ export default function Dashboard() {
                     <div className="grid grid-cols-3 gap-4">
                       <div>
                         <label className="block text-sm text-gray-400 mb-2">Provider</label>
-                        <select className="w-full px-3 py-2 bg-[#020817] border border-gray-800 rounded-md text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500">
-                          <option>Elevenlabs</option>
+                        <select
+                          className="w-full px-3 py-2 bg-[#020817] border border-gray-800 rounded-md text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                          value={ttsProvider}
+                          onChange={(e) => setTtsProvider(e.target.value)}
+                        >
+                          <option value="">Select provider</option>
+                          <option value="Elevenlabs">Elevenlabs</option>
                         </select>
                       </div>
                       <div>
@@ -373,9 +721,13 @@ export default function Dashboard() {
                       <div>
                         <label className="block text-sm text-gray-400 mb-2">Voice</label>
                         <div className="flex gap-2">
-                          <button className="flex-1 px-3 py-2 bg-[#020817] border border-gray-800 rounded-md text-white text-sm text-left">
-                            Raju - Human-like Customer
-                          </button>
+                          <input
+                            type="text"
+                            value={voice}
+                            onChange={(e) => setVoice(e.target.value)}
+                            placeholder="Voice id or name"
+                            className="flex-1 px-3 py-2 bg-[#020817] border border-gray-800 rounded-md text-white text-sm"
+                          />
                         </div>
                       </div>
                     </div>
@@ -677,6 +1029,60 @@ export default function Dashboard() {
                     </div>
                   </div>
                 </div>
+              ) : activeTab === 'tools' ? (
+                <div className="space-y-4">
+                  {loadingTools ? (
+                    <div className="text-sm text-gray-400">Loading tools...</div>
+                  ) : (
+                    <>
+                      <div className="flex items-center justify-between">
+                        <h3 className="text-sm font-semibold text-white tracking-wide">Agent Tools</h3>
+                        <button
+                          className="inline-flex items-center gap-1 rounded-md border border-gray-700 px-3 py-1 text-xs font-medium text-gray-200 hover:bg-gray-800 disabled:opacity-60 disabled:cursor-not-allowed"
+                          onClick={handleSaveTools}
+                          disabled={savingTools || tools.length === 0}
+                        >
+                          {savingTools ? 'Saving...' : 'Save tools'}
+                        </button>
+                      </div>
+                      {tools.length === 0 ? (
+                        <div className="text-xs text-gray-500">
+                          No tools configured for this agent.
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          {tools.map((tool) => (
+                            <div
+                              key={tool.id}
+                              className="flex items-center justify-between rounded-md border border-gray-800 bg-[#020817] px-3 py-2"
+                            >
+                              <div>
+                                <div className="text-sm font-medium text-white">{tool.name}</div>
+                                <div className="text-xs text-gray-500">
+                                  {tool.enabled ? 'Enabled' : 'Disabled'}
+                                </div>
+                              </div>
+                              <button
+                                className={`relative inline-flex h-5 w-9 items-center rounded-full border ${
+                                  tool.enabled
+                                    ? 'border-blue-500 bg-blue-500/20'
+                                    : 'border-gray-700 bg-[#020817]'
+                                }`}
+                                onClick={() => handleToggleTool(tool.id)}
+                              >
+                                <span
+                                  className={`inline-block h-4 w-4 rounded-full bg-white transform transition-transform ${
+                                    tool.enabled ? 'translate-x-4' : 'translate-x-0'
+                                  }`}
+                                />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
               ) : (
                 <>
                   {/* Choose LLM Model */}
@@ -817,28 +1223,14 @@ export default function Dashboard() {
                     </div>
 
                     {/* Knowledge Base */}
-                    <div>
-                      <label className="block text-sm font-medium text-white mb-2">
-                        Add knowledge base (Multi-select)
+                    <div className="space-y-3">
+                      <label className="block text-sm font-medium text-white">
+                        Knowledge Base
                       </label>
-                      <button className="w-full px-4 py-2 flex items-center justify-between rounded-md border border-gray-700 bg-[#020817] text-gray-400 text-sm hover:bg-[#0f172a] transition-colors">
-                        <span>Select knowledge bases</span>
-                        <svg
-                          width="15"
-                          height="15"
-                          viewBox="0 0 15 15"
-                          fill="none"
-                          xmlns="http://www.w3.org/2000/svg"
-                          className="h-4 w-4 opacity-50"
-                        >
-                          <path
-                            d="M4.18179 6.18181C4.35753 6.00608 4.64245 6.00608 4.81819 6.18181L7.49999 8.86362L10.1818 6.18181C10.3575 6.00608 10.6424 6.00608 10.8182 6.18181C10.9939 6.35755 10.9939 6.64247 10.8182 6.81821L7.81819 9.81821C7.73379 9.9026 7.61934 9.95001 7.49999 9.95001C7.38064 9.95001 7.26618 9.9026 7.18179 9.81821L4.18179 6.81821C4.00605 6.64247 4.00605 6.35755 4.18179 6.18181Z"
-                            fill="currentColor"
-                            fillRule="evenodd"
-                            clipRule="evenodd"
-                          />
-                        </svg>
-                      </button>
+                      <p className="text-xs text-gray-500">
+                        Upload documents that the agent can use when answering user queries.
+                      </p>
+                      <KnowledgeBaseSection agentId={selectedAgent ? selectedAgent.id : null} />
                     </div>
                   </div>
                 </>
@@ -858,13 +1250,17 @@ export default function Dashboard() {
 
               <div className="grid grid-cols-12 gap-2">
                 <div className="col-span-9">
-                  <button className="w-full px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md transition-colors flex items-center justify-center gap-2">
+                  <button
+                    className="w-full px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md transition-colors flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed"
+                    onClick={handleSaveAgent}
+                    disabled={savingAgent}
+                  >
                     <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
                       <path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/>
                       <path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7"/>
                       <path d="M7 3v4a1 1 0 0 0 1 1h7"/>
                     </svg>
-                    Save agent
+                    {savingAgent ? 'Saving...' : 'Save agent'}
                   </button>
                   <p className="mt-1 text-xs text-gray-500 italic flex items-center gap-1">
                     <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-3 w-3">
@@ -874,7 +1270,11 @@ export default function Dashboard() {
                   </p>
                 </div>
                 <div className="col-span-3 flex justify-end">
-                  <button className="h-9 w-9 flex items-center justify-center rounded-md border border-gray-700 hover:bg-red-500/10 hover:border-red-500 hover:text-red-500 transition-colors">
+                  <button
+                    className="h-9 w-9 flex items-center justify-center rounded-md border border-gray-700 hover:bg-red-500/10 hover:border-red-500 hover:text-red-500 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                    onClick={handleDeleteAgent}
+                    disabled={!selectedAgent || deletingAgent}
+                  >
                     <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
                       <path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
                       <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
@@ -940,7 +1340,7 @@ export default function Dashboard() {
               </button>
             </div>
 
-            <div className="max-h-[70vh] overflow-y-auto px-6 py-4 space-y-4 text-sm">
+      <div className="max-h-[70vh] overflow-y-auto px-6 py-4 space-y-4 text-sm">
               <p className="text-gray-400">
                 Tell us about your ideal agent and we&apos;ll help you build it step by step.
               </p>
@@ -952,6 +1352,8 @@ export default function Dashboard() {
                 <input
                   type="text"
                   placeholder="Enter agent name"
+                  value={agentName}
+                  onChange={(e) => setAgentName(e.target.value)}
                   className="w-full rounded-md border border-gray-800 bg-[#020817] px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
               </div>
@@ -1025,7 +1427,13 @@ export default function Dashboard() {
                 >
                   Cancel
                 </button>
-                <button className="px-4 py-2 rounded-md bg-blue-600 hover:bg-blue-700 text-sm font-semibold text-white">
+                <button
+                  className="px-4 py-2 rounded-md bg-blue-600 hover:bg-blue-700 text-sm font-semibold text-white"
+                  onClick={async () => {
+                    await handleSaveAgent();
+                    setShowNewAgentModal(false);
+                  }}
+                >
                   Generate Agent
                 </button>
               </div>
