@@ -1,5 +1,13 @@
 # Bolna — Voice AI Platform
 
+![Dashboard](public/Screenshot%20from%202026-07-04%2016-11-01.png)
+
+![Dashboard](public/Screenshot%20from%202026-07-04%2016-11-38.png)
+
+![Dashboard](public/Screenshot%20from%202026-07-04%2016-11-57.png)
+
+![Dashboard](public/Screenshot%20from%202026-07-04%2016-12-21.png)
+
 Production-grade Voice AI platform (similar to Bolna, Vapi, Retell) with real-time phone calls via Twilio, configurable AI agents, knowledge-base RAG, analytics, and a Next.js dashboard.
 
 ---
