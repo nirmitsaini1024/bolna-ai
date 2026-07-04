@@ -35,11 +35,18 @@ export default function ConfigPage() {
       description: 'Your Twilio phone number for incoming calls (from .env)',
     },
     {
+      key: 'VOICE_AI_BASE_URL',
+      label: 'Voice AI Server URL',
+      value: 'http://localhost:8000',
+      type: 'url',
+      description: 'In-house Piper TTS + faster-whisper STT server — default LOCAL provider (from .env)',
+    },
+    {
       key: 'DEEPGRAM_API_KEY',
       label: 'Deepgram API Key',
       value: '',
       type: 'password',
-      description: 'API key for Deepgram STT and TTS services (from .env)',
+      description: 'Optional cloud fallback for STT/TTS when the in-house server is unavailable (from .env)',
     },
     {
       key: 'OPENROUTER_API_KEY',

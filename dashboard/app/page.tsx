@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { bolnaAPI, Agent as ApiAgent, ToolConfig, KnowledgeDocument } from '../lib/api';
+import { bolnaAPI, Agent as ApiAgent, ToolConfig, KnowledgeSource } from '../lib/api';
+import { LLMProvider, DEFAULT_PROVIDER, getAllModels, getDefaultModel } from '../lib/models';
 
 type AgentStatus = 'draft' | 'active';
 type TabId = 'agent' | 'llm' | 'audio' | 'engine' | 'call' | 'tools' | 'analytics' | 'inbound';
@@ -16,56 +17,51 @@ interface KnowledgeBaseSectionProps {
 }
 
 function KnowledgeBaseSection({ agentId }: KnowledgeBaseSectionProps) {
-  const [docs, setDocs] = useState<KnowledgeDocument[]>([]);
-  const [content, setContent] = useState('');
+  const [sources, setSources] = useState<KnowledgeSource[]>([]);
+  const [selected, setSelected] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const loadDocs = async () => {
-      if (!agentId) {
-        setDocs([]);
-        return;
-      }
-      setLoading(true);
+    const load = async () => {
       setError(null);
+      setLoading(true);
       try {
-        const data = await bolnaAPI.getKnowledgeDocs(agentId);
-        setDocs(data);
+        const allSources = await bolnaAPI.getKnowledgeSources('');
+        setSources(allSources);
+
+        if (agentId) {
+          const attached = await bolnaAPI.getAgentKnowledgeSourceIds(agentId);
+          setSelected(attached.sourceIds);
+        } else {
+          setSelected([]);
+        }
       } catch (err) {
         console.error(err);
-        setError('Failed to load knowledge documents');
+        setError('Failed to load knowledge bases');
       } finally {
         setLoading(false);
       }
     };
 
-    loadDocs();
+    void load();
   }, [agentId]);
 
-  const handleUpload = async () => {
+  const handleSave = async () => {
     if (!agentId) {
       alert('Select an agent first');
       return;
     }
-    const trimmed = content.trim();
-    if (!trimmed) {
-      alert('Document content cannot be empty');
-      return;
-    }
-
     setSaving(true);
     setError(null);
     try {
-      const doc = await bolnaAPI.uploadKnowledgeDoc(agentId, trimmed);
-      setDocs((prev) => [doc, ...prev]);
-      setContent('');
-      alert('Knowledge document uploaded');
+      await bolnaAPI.setAgentKnowledgeSourceIds(agentId, selected);
+      alert('Knowledge bases saved');
     } catch (err) {
       console.error(err);
-      setError('Failed to upload knowledge document');
-      alert('Failed to upload knowledge document');
+      setError('Failed to save knowledge bases');
+      alert('Failed to save knowledge bases');
     } finally {
       setSaving(false);
     }
@@ -73,39 +69,65 @@ function KnowledgeBaseSection({ agentId }: KnowledgeBaseSectionProps) {
 
   return (
     <div className="space-y-3">
-      <textarea
-        className="w-full rounded-md border border-gray-800 bg-[#020817] px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500 min-h-[96px]"
-        placeholder="Paste knowledge text or FAQ content..."
-        value={content}
-        onChange={(e) => setContent(e.target.value)}
-      />
-      <div className="flex items-center justify-between text-xs">
-        <button
-          className="inline-flex items-center rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed"
-          onClick={handleUpload}
-          disabled={saving || !agentId}
-        >
-          {saving ? 'Uploading...' : 'Upload document'}
-        </button>
-        {error && <span className="text-red-400">{error}</span>}
-      </div>
-      <div className="mt-2 max-h-40 space-y-1 overflow-y-auto rounded-md border border-gray-900 bg-[#020817] p-2 text-xs text-gray-400">
-        {loading ? (
-          <div>Loading documents...</div>
-        ) : docs.length === 0 ? (
-          <div>No documents uploaded yet.</div>
-        ) : (
-          docs.map((d) => (
-            <div key={d.id} className="flex items-center justify-between py-1">
-              <span className="truncate">
-                {d.content.length > 80 ? `${d.content.slice(0, 80)}…` : d.content}
-              </span>
-              <span className="ml-2 shrink-0 text-[10px] text-gray-500">
-                {new Date(d.createdAt).toLocaleDateString()}
-              </span>
-            </div>
-          ))
-        )}
+      <div className="rounded-md border border-gray-800 bg-[#020817] p-3">
+        <div className="flex items-center justify-between">
+          <div className="text-xs text-gray-400">
+            Select which knowledge bases this agent can use. Upload knowledge bases in the sidebar.
+          </div>
+          <a href="/knowledge" className="text-xs text-blue-300 hover:text-blue-200 hover:underline">
+            Open Knowledge Base
+          </a>
+        </div>
+
+        <div className="mt-3 max-h-56 space-y-2 overflow-y-auto">
+          {loading ? (
+            <div className="text-xs text-gray-500">Loading knowledge bases…</div>
+          ) : sources.length === 0 ? (
+            <div className="text-xs text-gray-500">No knowledge bases uploaded yet.</div>
+          ) : (
+            sources.map((s) => {
+              const checked = selected.includes(s.id);
+              return (
+                <label
+                  key={s.id}
+                  className="flex cursor-pointer items-center justify-between rounded-md border border-gray-800 bg-[#020817] px-3 py-2 text-sm hover:bg-[#0f1a2f]"
+                >
+                  <div className="min-w-0">
+                    <div className="truncate text-white">{s.title}</div>
+                    <div className="text-[11px] text-gray-500">
+                      {s.type} · {new Date(s.createdAt).toLocaleString()}
+                    </div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={(e) => {
+                      setSelected((prev) => {
+                        const set = new Set(prev);
+                        if (e.target.checked) set.add(s.id);
+                        else set.delete(s.id);
+                        return Array.from(set);
+                      });
+                    }}
+                    className="h-4 w-4 accent-blue-500"
+                    disabled={!agentId || saving}
+                  />
+                </label>
+              );
+            })
+          )}
+        </div>
+
+        <div className="mt-3 flex items-center justify-between">
+          {error ? <div className="text-xs text-red-400">{error}</div> : <div />}
+          <button
+            className="inline-flex items-center rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed"
+            onClick={handleSave}
+            disabled={saving || !agentId}
+          >
+            {saving ? 'Saving…' : 'Save knowledge selection'}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -119,13 +141,16 @@ export default function Dashboard() {
   const [agentName, setAgentName] = useState('');
   const [welcomeMessage, setWelcomeMessage] = useState('');
   const [systemPrompt, setSystemPrompt] = useState('');
-  const [provider, setProvider] = useState('Azure');
+  const [provider, setProvider] = useState<string>(DEFAULT_PROVIDER);
   const [model, setModel] = useState('');
   const [temperature, setTemperature] = useState(0.7);
   const [tokens, setTokens] = useState(256);
+  const [language, setLanguage] = useState('en');
   const [voice, setVoice] = useState('');
-  const [ttsProvider, setTtsProvider] = useState('');
-  const [sttProvider, setSttProvider] = useState<'DEEPGRAM' | 'SARVAM'>('DEEPGRAM');
+  const [ttsProvider, setTtsProvider] = useState('LOCAL');
+  const [sttProvider, setSttProvider] = useState<'LOCAL' | 'DEEPGRAM' | 'SARVAM' | 'ELEVENLABS'>('LOCAL');
+  const [ttsModel, setTtsModel] = useState('');
+  const [sttModel, setSttModel] = useState('');
   const [activeTab, setActiveTab] = useState<TabId>('llm');
   const [showNewAgentModal, setShowNewAgentModal] = useState(false);
   const [tools, setTools] = useState<ToolConfig[]>([]);
@@ -170,16 +195,23 @@ export default function Dashboard() {
     }
   }, [router]);
 
+  const availableModels = useMemo(() => {
+    return getAllModels();
+  }, []);
+
   const handleNewAgentClick = () => {
     setSelectedAgentId(null);
     setAgentName('');
     setWelcomeMessage('');
     setSystemPrompt('');
-    setModel('');
+    setProvider(DEFAULT_PROVIDER);
+    setModel(getDefaultModel());
     setTemperature(0.3);
     setTokens(256);
-    setVoice('');
-    setTtsProvider('');
+    setLanguage('en');
+    setVoice('male1');
+    setTtsProvider('LOCAL');
+    setSttProvider('LOCAL');
     setShowNewAgentModal(true);
   };
 
@@ -219,11 +251,14 @@ export default function Dashboard() {
     setTokens(
       typeof selectedAgent.maxTokens === 'number' ? selectedAgent.maxTokens : 256
     );
+    setLanguage(selectedAgent.language ?? 'en');
     setVoice(selectedAgent.voice ?? '');
-    setTtsProvider(selectedAgent.ttsProvider ?? '');
+    setTtsProvider(selectedAgent.ttsProvider ?? 'LOCAL');
     setSttProvider(
-      (selectedAgent.sttProvider as 'DEEPGRAM' | 'SARVAM') || 'DEEPGRAM'
+      (selectedAgent.sttProvider as 'LOCAL' | 'DEEPGRAM' | 'SARVAM' | 'ELEVENLABS') || 'LOCAL'
     );
+    setTtsModel(selectedAgent.ttsModel ?? '');
+    setSttModel(selectedAgent.sttModel ?? '');
   }, [selectedAgent]);
 
   useEffect(() => {
@@ -260,10 +295,14 @@ export default function Dashboard() {
         name: agentName,
         welcomeMessage,
         systemPrompt,
+        llmProvider: provider,
         llmModel: model,
         temperature,
         maxTokens: tokens,
+        language,
         voice,
+        ttsModel,
+        sttModel,
         ttsProvider,
         sttProvider,
       };
@@ -556,7 +595,7 @@ export default function Dashboard() {
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
-                className={`px-3 py-2 rounded-md text-sm font-medium transition-colors flex items-center justify-center gap-2 flex-grow ${
+                className={`px-3 py-2 rounded-md text-sm font-medium transition-colors flex items-center justify-center gap-2 grow ${
                   activeTab === tab.id
                     ? 'bg-[#0a0a0f] text-blue-500 shadow'
                     : 'text-gray-400 hover:text-blue-500'
@@ -632,10 +671,14 @@ export default function Dashboard() {
                     </h3>
                     <div className="space-y-2">
                       <label className="block text-sm text-gray-400">Language</label>
-                      <select className="w-64 px-3 py-2 bg-[#020817] border border-gray-800 rounded-md text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500">
-                        <option>Hindi</option>
-                        <option>English</option>
-                        <option>Spanish</option>
+                      <select
+                        className="w-64 px-3 py-2 bg-[#020817] border border-gray-800 rounded-md text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        value={language}
+                        onChange={(e) => setLanguage(e.target.value)}
+                      >
+                        <option value="en">English</option>
+                        <option value="hi">Hindi</option>
+                        <option value="hinglish">Hinglish</option>
                       </select>
                     </div>
                   </div>
@@ -654,21 +697,41 @@ export default function Dashboard() {
                         <select
                           className="w-full px-3 py-2 bg-[#020817] border border-gray-800 rounded-md text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
                           value={sttProvider}
-                          onChange={(e) =>
-                            setSttProvider(e.target.value === 'SARVAM' ? 'SARVAM' : 'DEEPGRAM')
-                          }
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            if (v === 'DEEPGRAM') return setSttProvider('DEEPGRAM');
+                            if (v === 'SARVAM') return setSttProvider('SARVAM');
+                            if (v === 'ELEVENLABS') return setSttProvider('ELEVENLABS');
+                            return setSttProvider('LOCAL');
+                          }}
                         >
+                          <option value="LOCAL">In-House (Piper + Whisper)</option>
                           <option value="DEEPGRAM">Deepgram</option>
                           <option value="SARVAM">Sarvam AI</option>
+                          <option value="ELEVENLABS">ElevenLabs</option>
                         </select>
                       </div>
                       <div>
                         <label className="block text-sm text-gray-400 mb-2">Model</label>
-                        <select className="w-full px-3 py-2 bg-[#020817] border border-gray-800 rounded-md text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500">
+                        {sttProvider === 'LOCAL' ? (
+                          <p className="px-3 py-2 text-xs text-gray-500 border border-gray-800 rounded-md">
+                            Uses self-hosted faster-whisper
+                          </p>
+                        ) : (
+                        <select
+                          className="w-full px-3 py-2 bg-[#020817] border border-gray-800 rounded-md text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                          value={sttModel}
+                          onChange={(e) => setSttModel(e.target.value)}
+                        >
                           {sttProvider === 'SARVAM' ? (
                             <>
-                              <option value="saaras:realtime">saaras:realtime</option>
-                              <option value="saaras:streaming">saaras:streaming</option>
+                              <option value="saaras:v3">saaras:v3</option>
+                              <option value="saarika:v2.5">saarika:v2.5</option>
+                            </>
+                          ) : sttProvider === 'ELEVENLABS' ? (
+                            <>
+                              <option value="scribe_v2">scribe_v2</option>
+                              <option value="scribe_v2_realtime">scribe_v2_realtime</option>
                             </>
                           ) : (
                             <>
@@ -677,6 +740,7 @@ export default function Dashboard() {
                             </>
                           )}
                         </select>
+                        )}
                       </div>
                     </div>
                     <div className="space-y-2">
@@ -708,26 +772,156 @@ export default function Dashboard() {
                           value={ttsProvider}
                           onChange={(e) => setTtsProvider(e.target.value)}
                         >
-                          <option value="">Select provider</option>
-                          <option value="Elevenlabs">Elevenlabs</option>
+                          <option value="LOCAL">In-House (Piper + Whisper)</option>
+                          <option value="DEEPGRAM">Deepgram</option>
+                          <option value="ELEVENLABS">ElevenLabs</option>
+                          <option value="CARTESIA">Cartesia</option>
+                          <option value="SARVAM">Sarvam AI</option>
                         </select>
                       </div>
                       <div>
                         <label className="block text-sm text-gray-400 mb-2">Model</label>
-                        <select className="w-full px-3 py-2 bg-[#020817] border border-gray-800 rounded-md text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500">
-                          <option>eleven_turbo_v2_5</option>
+                        <select
+                          className="w-full px-3 py-2 bg-[#020817] border border-gray-800 rounded-md text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                          value={ttsModel}
+                          onChange={(e) => setTtsModel(e.target.value)}
+                        >
+                          {ttsProvider === 'LOCAL' ? (
+                            <option value="">Self-hosted Piper (no model selection)</option>
+                          ) : ttsProvider === 'DEEPGRAM' ? (
+                            <>
+                              <option value="aura-asteria-en">aura-asteria-en (en)</option>
+                              <option value="aura-thalia-en">aura-thalia-en (en)</option>
+                              <option value="aura-apollo-en">aura-apollo-en (en)</option>
+                            </>
+                          ) : ttsProvider === 'ELEVENLABS' ? (
+                            <>
+                              <option value="eleven_flash_v2_5">eleven_flash_v2_5 (fast)</option>
+                              <option value="eleven_multilingual_v2">eleven_multilingual_v2</option>
+                            </>
+                          ) : ttsProvider === 'CARTESIA' ? (
+                            <>
+                              <option value="sonic-3">sonic-3 (latest)</option>
+                              <option value="sonic-3-2026-01-12">sonic-3-2026-01-12</option>
+                            </>
+                          ) : ttsProvider === 'SARVAM' ? (
+                            <>
+                              <option value="bulbul:v3">bulbul:v3</option>
+                              <option value="bulbul:v2">bulbul:v2</option>
+                            </>
+                          ) : (
+                            <option value="">Select provider first</option>
+                          )}
                         </select>
                       </div>
                       <div>
                         <label className="block text-sm text-gray-400 mb-2">Voice</label>
                         <div className="flex gap-2">
-                          <input
-                            type="text"
-                            value={voice}
-                            onChange={(e) => setVoice(e.target.value)}
-                            placeholder="Voice id or name"
-                            className="flex-1 px-3 py-2 bg-[#020817] border border-gray-800 rounded-md text-white text-sm"
-                          />
+                          {ttsProvider === 'LOCAL' ? (
+                            <select
+                              className="flex-1 px-3 py-2 bg-[#020817] border border-gray-800 rounded-md text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                              value={voice}
+                              onChange={(e) => setVoice(e.target.value)}
+                            >
+                              <option value="">Select voice</option>
+                              <option value="male1">Male 1 (en_US-lessac-medium)</option>
+                              <option value="male2">Male 2 (en_US-ryan-medium)</option>
+                              <option value="female1">Female 1 (en_US-amy-medium)</option>
+                              <option value="female2">Female 2 (en_US-kathleen-low)</option>
+                            </select>
+                          ) : ttsProvider === 'SARVAM' ? (
+                            <select
+                              className="flex-1 px-3 py-2 bg-[#020817] border border-gray-800 rounded-md text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                              value={voice}
+                              onChange={(e) => setVoice(e.target.value)}
+                            >
+                              <option value="">Select voice</option>
+                              <option value="ritu">Ritu (Female)</option>
+                              <option value="priya">Priya (Female)</option>
+                              <option value="neha">Neha (Female)</option>
+                              <option value="pooja">Pooja (Female)</option>
+                              <option value="simran">Simran (Female)</option>
+                              <option value="kavya">Kavya (Female)</option>
+                              <option value="ishita">Ishita (Female)</option>
+                              <option value="shreya">Shreya (Female)</option>
+                              <option value="roopa">Roopa (Female)</option>
+                              <option value="tanya">Tanya (Female)</option>
+                              <option value="shruti">Shruti (Female)</option>
+                              <option value="suhani">Suhani (Female)</option>
+                              <option value="kavitha">Kavitha (Female)</option>
+                              <option value="rupali">Rupali (Female)</option>
+                              <option value="niharika">Niharika (Female)</option>
+                              <option value="amelia">Amelia (Female)</option>
+                              <option value="sophia">Sophia (Female)</option>
+                              <option value="aditya">Aditya (Male)</option>
+                              <option value="rahul">Rahul (Male)</option>
+                              <option value="rohan">Rohan (Male)</option>
+                              <option value="amit">Amit (Male)</option>
+                              <option value="dev">Dev (Male)</option>
+                              <option value="ratan">Ratan (Male)</option>
+                              <option value="varun">Varun (Male)</option>
+                              <option value="manan">Manan (Male)</option>
+                              <option value="sumit">Sumit (Male)</option>
+                              <option value="kabir">Kabir (Male)</option>
+                              <option value="aayan">Aayan (Male)</option>
+                              <option value="shubh">Shubh (Male)</option>
+                              <option value="ashutosh">Ashutosh (Male)</option>
+                              <option value="advait">Advait (Male)</option>
+                              <option value="anand">Anand (Male)</option>
+                              <option value="tarun">Tarun (Male)</option>
+                              <option value="sunny">Sunny (Male)</option>
+                              <option value="mani">Mani (Male)</option>
+                              <option value="gokul">Gokul (Male)</option>
+                              <option value="vijay">Vijay (Male)</option>
+                              <option value="mohit">Mohit (Male)</option>
+                              <option value="rehan">Rehan (Male)</option>
+                              <option value="soham">Soham (Male)</option>
+                            </select>
+                          ) : ttsProvider === 'DEEPGRAM' ? (
+                            <select
+                              className="flex-1 px-3 py-2 bg-[#020817] border border-gray-800 rounded-md text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                              value={voice}
+                              onChange={(e) => setVoice(e.target.value)}
+                            >
+                              <option value="">Select voice</option>
+                              <option value="aura-asteria-en">Asteria (Female, English)</option>
+                              <option value="aura-luna-en">Luna (Female, English)</option>
+                              <option value="aura-stella-en">Stella (Female, English)</option>
+                              <option value="aura-athena-en">Athena (Female, English)</option>
+                              <option value="aura-hera-en">Hera (Female, English)</option>
+                              <option value="aura-orion-en">Orion (Male, English)</option>
+                              <option value="aura-arcas-en">Arcas (Male, English)</option>
+                              <option value="aura-perseus-en">Perseus (Male, English)</option>
+                              <option value="aura-angus-en">Angus (Male, Irish English)</option>
+                              <option value="aura-orpheus-en">Orpheus (Male, English)</option>
+                              <option value="aura-helios-en">Helios (Male, English)</option>
+                              <option value="aura-zeus-en">Zeus (Male, English)</option>
+                            </select>
+                          ) : ttsProvider === 'ELEVENLABS' ? (
+                            <input
+                              type="text"
+                              value={voice}
+                              onChange={(e) => setVoice(e.target.value)}
+                              placeholder="ElevenLabs voice ID"
+                              className="flex-1 px-3 py-2 bg-[#020817] border border-gray-800 rounded-md text-white text-sm"
+                            />
+                          ) : ttsProvider === 'CARTESIA' ? (
+                            <input
+                              type="text"
+                              value={voice}
+                              onChange={(e) => setVoice(e.target.value)}
+                              placeholder="Cartesia voice ID"
+                              className="flex-1 px-3 py-2 bg-[#020817] border border-gray-800 rounded-md text-white text-sm"
+                            />
+                          ) : (
+                            <input
+                              type="text"
+                              value={voice}
+                              onChange={(e) => setVoice(e.target.value)}
+                              placeholder="Voice id or name"
+                              className="flex-1 px-3 py-2 bg-[#020817] border border-gray-800 rounded-md text-white text-sm"
+                            />
+                          )}
                         </div>
                       </div>
                     </div>
@@ -1096,9 +1290,7 @@ export default function Dashboard() {
                           onChange={(e) => setProvider(e.target.value)}
                           className="w-full px-3 py-2 bg-[#020817] border border-gray-800 rounded-md text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
                         >
-                          <option value="Azure">Azure</option>
-                          <option value="OpenAI">OpenAI</option>
-                          <option value="Anthropic">Anthropic</option>
+                          <option value={LLMProvider.OPENROUTER}>OpenRouter</option>
                         </select>
                       </div>
                       <div>
@@ -1108,9 +1300,14 @@ export default function Dashboard() {
                           onChange={(e) => setModel(e.target.value)}
                           className="w-full px-3 py-2 bg-[#020817] border border-gray-800 rounded-md text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
                         >
-                          <option value="gpt-4.1-mini-cluster">gpt-4.1-mini cluster</option>
-                          <option value="gpt-4-turbo">gpt-4-turbo</option>
-                          <option value="gpt-3.5-turbo">gpt-3.5-turbo</option>
+                          {availableModels.length === 0 && (
+                            <option value="">No models available</option>
+                          )}
+                          {availableModels.map((modelOption) => (
+                            <option key={modelOption.id} value={modelOption.id}>
+                              {modelOption.label} ({modelOption.tag})
+                            </option>
+                          ))}
                         </select>
                       </div>
                     </div>
@@ -1301,11 +1498,6 @@ export default function Dashboard() {
 
               <div className="shrink-0 h-px w-full bg-gray-800" />
 
-              <div className="flex flex-col gap-2">
-                <button className="w-full px-4 py-2 bg-blue-600 text-white font-medium rounded-lg text-center border border-gray-700">
-                  Connecting...
-                </button>
-              </div>
             </div>
           </div>
         </div>

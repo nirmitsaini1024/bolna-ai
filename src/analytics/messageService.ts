@@ -55,6 +55,21 @@ export class MessageService {
     }
   }
 
+  async listMessagesByCallId(callId: string): Promise<Array<Pick<Message, 'id' | 'role' | 'content' | 'createdAt'>>> {
+    const messages = await this.prisma.message.findMany({
+      where: { callId },
+      orderBy: { createdAt: 'asc' },
+      select: {
+        id: true,
+        role: true,
+        content: true,
+        createdAt: true,
+      },
+    });
+
+    return messages;
+  }
+
   async disconnect(): Promise<void> {
     await this.prisma.$disconnect();
     await this.pool.end();

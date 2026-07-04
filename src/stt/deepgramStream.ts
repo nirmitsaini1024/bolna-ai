@@ -8,6 +8,7 @@ export interface DeepgramConfig {
   encoding: 'mulaw' | 'linear16';
   sampleRate: number;
   channels: number;
+  language?: string;
 }
 
 export interface TranscriptResult {
@@ -110,6 +111,10 @@ export class DeepgramStream {
       punctuate: 'true',
       utterance_end_ms: '1000',
     });
+
+    if (this.config.language && this.config.language.trim()) {
+      params.set('language', this.config.language.trim());
+    }
 
     return `wss://api.deepgram.com/v1/listen?${params.toString()}`;
   }

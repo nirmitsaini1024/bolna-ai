@@ -86,6 +86,7 @@ export class TwiMLController {
       <Parameter name="toPhoneNumber" value="${encodedPhone}" />
 ${agentParam}    </Stream>
   </Connect>
+  <Pause length="600" />
 </Response>`;
   }
 }

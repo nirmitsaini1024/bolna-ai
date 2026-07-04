@@ -125,11 +125,14 @@ export interface CallSession {
     channels: number;
   };
   audioQueue: any;
-  sttStream?: any;
+  sttClient?: any;
+  sttStream?: any; // legacy alias; kept for compatibility
+  sttProviderName?: string; // provider backing sttClient (LOCAL/DEEPGRAM/...), used to decide reinit
   conversationHistory: ConversationMessage[];
   ws?: any;
   isSpeaking: boolean;
   ttsAbortController?: AbortController;
+  ttsClient?: any;
   agent?: Agent;
   agentConfig?: Agent;
   toPhoneNumber?: string;
@@ -145,6 +148,15 @@ export interface CallSession {
   responseLatency?: number;
   endpointingMs?: number;
   finalCallMessage?: string;
+
+  isResponding?: boolean;
+  hasRespondedToCurrentUtterance?: boolean;
+  lastPartialTranscript?: string;
+  lastPartialTimestamp?: number;
+  partialDebounceTimer?: NodeJS.Timeout;
+  lastAudioTimestamp?: number;
+  firstAudioTimestamp?: number;
+  partialTranscriptChangeCount?: number;
 }
 
 /**

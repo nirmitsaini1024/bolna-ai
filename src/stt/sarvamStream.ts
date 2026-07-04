@@ -9,6 +9,8 @@ export interface SarvamConfig {
   encoding: 'mulaw' | 'linear16';
   sampleRate: number;
   channels: number;
+  model?: string; // e.g. saaras-v3
+  languageCode?: string; // e.g. en-IN / hi-IN
 }
 
 /**
@@ -43,7 +45,7 @@ export class SarvamStream {
 
       this.ws = new WebSocket(url, {
         headers: {
-          Authorization: `Bearer ${this.config.apiKey}`,
+          'Api-Subscription-Key': this.config.apiKey,
         },
       });
 
@@ -84,44 +86,60 @@ export class SarvamStream {
     });
   }
 
-  // TODO: replace with the real Sarvam streaming endpoint + query params
   private buildStreamUrl(): string {
     const params = new URLSearchParams({
-      encoding: this.config.encoding,
+      model: this.config.model || 'saaras:v3',
       sample_rate: this.config.sampleRate.toString(),
-      channels: this.config.channels.toString(),
+      input_audio_codec: this.config.encoding === 'mulaw' ? 'mulaw' : 'pcm_s16le',
+      mode: 'transcribe',
     });
 
-    return `wss://api.sarvam.ai/v1/listen?${params.toString()}`;
+    if (this.config.languageCode) {
+      params.set('language-code', this.config.languageCode);
+    }
+
+    return `wss://api.sarvam.ai/speech-to-text/ws?${params.toString()}`;
   }
 
   private handleMessage(data: WebSocket.Data): void {
     try {
       const message = JSON.parse(data.toString());
 
-      // Adjust these fields to Sarvam's actual response schema
-      if (message.type === 'results' || message.type === 'result') {
-        const transcript: string | undefined = message.text ?? message.transcript;
-        const isFinal: boolean = Boolean(message.is_final ?? message.final);
-        const confidence: number | undefined = message.confidence;
+      // Sarvam WS emits partial/final transcripts depending on mode; normalize best-effort.
+      const transcript: string | undefined =
+        message?.text ??
+        message?.transcript ??
+        message?.data?.text ??
+        message?.data?.transcript ??
+        message?.result?.text;
 
-        if (transcript && transcript.trim().length > 0) {
-          const result: TranscriptResult = {
-            text: transcript,
-            isFinal,
-            confidence,
-          };
+      const isFinal: boolean = Boolean(
+        message?.is_final ??
+          message?.final ??
+          message?.data?.is_final ??
+          message?.data?.final ??
+          (message?.type === 'final' || message?.message_type === 'final'),
+      );
 
-          logger.info('Sarvam transcript received', {
-            callSid: this.callSid,
-            text: result.text,
-            isFinal: result.isFinal,
-            confidence: result.confidence,
-          });
+      const confidence: number | undefined =
+        message?.confidence ?? message?.data?.confidence ?? message?.result?.confidence;
 
-          if (this.onTranscriptCallback) {
-            this.onTranscriptCallback(result);
-          }
+      if (transcript && transcript.trim().length > 0) {
+        const result: TranscriptResult = {
+          text: transcript,
+          isFinal,
+          confidence,
+        };
+
+        logger.info('Sarvam transcript received', {
+          callSid: this.callSid,
+          text: result.text,
+          isFinal: result.isFinal,
+          confidence: result.confidence,
+        });
+
+        if (this.onTranscriptCallback) {
+          this.onTranscriptCallback(result);
         }
       } else {
         logger.debug('Sarvam message', {

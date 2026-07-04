@@ -30,6 +30,19 @@ export function Sidebar() {
       ),
     },
     {
+      title: 'Live Calls',
+      href: '/calls/live',
+      icon: (
+        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-radio">
+          <circle cx="12" cy="12" r="2"></circle>
+          <path d="M4.93 19.07a10 10 0 0 1 0-14.14"></path>
+          <path d="M7.76 16.24a6 6 0 0 1 0-8.49"></path>
+          <path d="M16.24 7.76a6 6 0 0 1 0 8.49"></path>
+          <path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path>
+        </svg>
+      ),
+    },
+    {
       title: 'Call History',
       href: '/calls',
       icon: (
@@ -39,6 +52,20 @@ export function Sidebar() {
           <path d="M21 18h-8"></path>
           <path d="M3 6v4c0 1.1.9 2 2 2h3"></path>
           <path d="M3 10v6c0 1.1.9 2 2 2h3"></path>
+        </svg>
+      ),
+    },
+    {
+      title: 'Knowledge Base',
+      href: '/knowledge',
+      icon: (
+        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-book-open-text">
+          <path d="M12 7v14"></path>
+          <path d="M16 12h2"></path>
+          <path d="M16 8h2"></path>
+          <path d="M16 16h2"></path>
+          <path d="M4 19.5V5a2 2 0 0 1 2-2h11a1 1 0 0 1 1 1v15.5"></path>
+          <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
         </svg>
       ),
     },

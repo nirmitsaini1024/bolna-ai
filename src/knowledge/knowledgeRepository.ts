@@ -1,4 +1,4 @@
-import { PrismaClient, KnowledgeDocument } from '@prisma/client';
+import { PrismaClient, KnowledgeDocument, KnowledgeSource } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
 import { createLogger } from '../utils/logger';
@@ -28,12 +28,19 @@ export class KnowledgeRepository {
 
   async storeDocument(agentId: string, content: string, embedding: number[]): Promise<KnowledgeDocument> {
     try {
-      const document = await this.prisma.knowledgeDocument.create({
-        data: {
-          agentId,
-          content,
-          embedding,
-        },
+      // Legacy helper kept for backwards compatibility. Prefer storeChunk().
+      // We create a source per agent and attach this chunk to it.
+      const source = await this.createSource({
+        type: 'TEXT',
+        title: 'Inline note',
+        url: null,
+      });
+
+      const document = await this.storeChunk({
+        agentId,
+        sourceId: source.id,
+        content,
+        embedding,
       });
 
       logger.info('[KB_DOCUMENT_ADDED]', {
@@ -50,29 +57,82 @@ export class KnowledgeRepository {
     }
   }
 
-  async searchSimilarDocuments(agentId: string, embedding: number[], limit: number): Promise<KnowledgeDocument[]> {
+  async createSource(params: {
+    type: string;
+    title: string;
+    url?: string | null;
+  }): Promise<KnowledgeSource> {
+    const source = await this.prisma.knowledgeSource.create({
+      data: {
+        type: params.type,
+        title: params.title,
+        url: params.url ?? null,
+      },
+    });
+
+    logger.info('[KB_SOURCE_CREATED]', {
+      sourceId: source.id,
+      type: source.type,
+      title: source.title,
+    });
+
+    return source;
+  }
+
+  async storeChunk(params: {
+    agentId?: string | null;
+    sourceId: string;
+    content: string;
+    embedding: number[];
+  }): Promise<KnowledgeDocument> {
+    const vectorLiteral = `[${params.embedding.join(',')}]`;
+
+    const result = await this.pool.query(
+      `
+      INSERT INTO "KnowledgeDocument" ("id", "agentId", "sourceId", "content", "embedding")
+      VALUES (gen_random_uuid(), $1, $2, $3, $4::vector(1536))
+      RETURNING "id", "organizationId", "agentId", "sourceId", "content", "embedding", "createdAt"
+      `,
+      [params.agentId ?? null, params.sourceId, params.content, vectorLiteral]
+    );
+
+    return result.rows[0] as KnowledgeDocument;
+  }
+
+  async listSources(): Promise<Array<Pick<KnowledgeSource, 'id' | 'title' | 'type' | 'createdAt' | 'url'>>> {
+    return this.prisma.knowledgeSource.findMany({
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, title: true, type: true, createdAt: true, url: true },
+    });
+  }
+
+  async deleteSource(sourceId: string): Promise<void> {
+    // FK is ON DELETE CASCADE, this removes chunks as well.
+    await this.prisma.knowledgeSource.delete({ where: { id: sourceId } });
+  }
+
+  async searchSimilarDocumentsForAgent(agentId: string, embedding: number[], limit: number): Promise<KnowledgeDocument[]> {
     try {
-      const documents = await this.prisma.knowledgeDocument.findMany({
-        where: { agentId },
-      });
+      const vectorLiteral = `[${embedding.join(',')}]`;
 
-      if (documents.length === 0) {
-        return [];
-      }
+      const result = await this.pool.query(
+        `
+        SELECT "id", "organizationId", "agentId", "sourceId", "content", "embedding", "createdAt"
+        FROM "KnowledgeDocument"
+        WHERE "sourceId" IN (
+          SELECT "sourceId" FROM "AgentKnowledgeSource" WHERE "agentId" = $1
+        )
+        ORDER BY "embedding" <-> $2::vector(1536)
+        LIMIT $3
+        `,
+        [agentId, vectorLiteral, limit]
+      );
 
-      const scored = documents
-        .map((doc) => ({
-          doc,
-          score: this.cosineSimilarity(embedding, doc.embedding),
-        }))
-        .filter((entry) => Number.isFinite(entry.score))
-        .sort((a, b) => b.score - a.score)
-        .slice(0, limit)
-        .map((entry) => entry.doc);
+      const scored = result.rows as KnowledgeDocument[];
 
       logger.info('[KB_RETRIEVAL]', {
         agentId,
-        documentsAvailable: documents.length,
+        documentsAvailable: scored.length,
         documentsReturned: scored.length,
       });
 
@@ -81,31 +141,6 @@ export class KnowledgeRepository {
       logger.error('Failed to search knowledge documents', { error });
       throw error;
     }
-  }
-
-  private cosineSimilarity(a: number[], b: number[]): number {
-    const len = Math.min(a.length, b.length);
-    if (len === 0) {
-      return 0;
-    }
-
-    let dot = 0;
-    let normA = 0;
-    let normB = 0;
-
-    for (let i = 0; i < len; i += 1) {
-      const va = a[i];
-      const vb = b[i];
-      dot += va * vb;
-      normA += va * va;
-      normB += vb * vb;
-    }
-
-    if (normA === 0 || normB === 0) {
-      return 0;
-    }
-
-    return dot / (Math.sqrt(normA) * Math.sqrt(normB));
   }
 
   async disconnect(): Promise<void> {

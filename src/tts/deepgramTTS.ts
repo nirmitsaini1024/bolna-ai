@@ -36,6 +36,22 @@ export class DeepgramTTS {
     });
   }
 
+  startStream(session: CallSession): void {
+    const { callSid } = session;
+    logger.info('[TTS_STREAM_START]', { callSid });
+    this.clearQueue(callSid);
+    this.abort(callSid);
+  }
+
+  async sendChunk(session: CallSession, text: string, ws: WebSocket, voice?: string): Promise<void> {
+    // For now, we implement streaming as a sequence of queued speak calls.
+    await this.speak(session, text, ws, voice);
+  }
+
+  endStream(session: CallSession): void {
+    logger.info('[TTS_STREAM_END]', { callSid: session.callSid });
+  }
+
   async speak(session: CallSession, text: string, ws: WebSocket, voice?: string): Promise<void> {
     const { callSid, streamSid } = session;
 
@@ -75,6 +91,8 @@ export class DeepgramTTS {
     if (!queue || queue.length === 0) {
       this.isProcessing.set(callSid, false);
       session.isSpeaking = false;
+      session.hasRespondedToCurrentUtterance = false;
+      logger.debug('[DEEPGRAM_TTS_QUEUE_EMPTY_READY_FOR_USER]', { callSid });
       return;
     }
 
@@ -95,6 +113,8 @@ export class DeepgramTTS {
     } else {
       this.isProcessing.set(callSid, false);
       session.isSpeaking = false;
+      session.hasRespondedToCurrentUtterance = false;
+      logger.debug('[DEEPGRAM_TTS_COMPLETE_READY_FOR_USER]', { callSid });
     }
   }
 

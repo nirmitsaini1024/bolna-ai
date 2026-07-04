@@ -87,6 +87,18 @@ export class VoiceGateway {
     };
   }
 
+  getActiveSessionsData() {
+    return this.streamHandler.getActiveSessionsData();
+  }
+
+  async hangupCall(callSid: string): Promise<boolean> {
+    return this.streamHandler.hangupCall(callSid);
+  }
+
+  getStreamHandler(): StreamHandler {
+    return this.streamHandler;
+  }
+
   async shutdown(): Promise<void> {
     logger.info('Shutting down Voice Gateway');
 

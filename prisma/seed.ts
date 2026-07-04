@@ -19,9 +19,10 @@ async function main() {
       id: 'support-agent-1',
       name: 'Support Agent',
       systemPrompt: 'You are a friendly ecommerce support assistant. Help customers with their orders, products, and general inquiries. Be concise and helpful.',
-      voice: 'aura-asteria-en',
+      voice: 'male1',
       temperature: 0.3,
-      sttProvider: 'DEEPGRAM',
+      sttProvider: 'LOCAL',
+      ttsProvider: 'LOCAL',
     },
   });
 

@@ -13,18 +13,25 @@ export interface Agent {
   status: 'draft' | 'active';
   systemPrompt?: string;
   welcomeMessage?: string;
+  llmProvider?: string;
   llmModel?: string;
   temperature?: number;
   maxTokens?: number;
+  language?: string;
   voice?: string;
-  ttsProvider?: string;
-  sttProvider?: 'DEEPGRAM' | 'SARVAM' | string;
+  ttsModel?: string;
+  sttModel?: string;
+  ttsProvider?: 'LOCAL' | 'DEEPGRAM' | 'SARVAM' | 'ELEVENLABS' | 'CARTESIA' | string;
+  sttProvider?: 'LOCAL' | 'DEEPGRAM' | 'SARVAM' | 'ELEVENLABS' | string;
 }
 
 export interface Call {
   id: string;
+  callSid?: string;
   phone: string;
   agentId?: string | null;
+  startedAt?: string;
+  endedAt?: string | null;
   durationMs?: number | null;
   createdAt: string;
 }
@@ -34,6 +41,16 @@ export interface CallMessage {
   role: 'user' | 'assistant';
   content: string;
   createdAt: string;
+}
+
+export interface ActiveCall {
+  callSid: string;
+  agentId: string | null;
+  agentName: string | null;
+  status: string;
+  startTime: string;
+  currentTranscript: Array<{ role: string; content: string; timestamp: string }>;
+  phone: string | null;
 }
 
 export interface ToolConfig {
@@ -47,6 +64,14 @@ export interface KnowledgeDocument {
   id: string;
   agentId: string;
   content: string;
+  createdAt: string;
+}
+
+export interface KnowledgeSource {
+  id: string;
+  title: string;
+  type: string;
+  url?: string | null;
   createdAt: string;
 }
 
@@ -163,6 +188,66 @@ export class BolnaAPI {
     return request<KnowledgeDocument[]>(`/agents/${agentId}/knowledge`);
   }
 
+  async getKnowledgeSources(agentId: string): Promise<KnowledgeSource[]> {
+    // Global list (agent selection/attachment is separate)
+    return request<KnowledgeSource[]>(`/knowledge/source`);
+  }
+
+  async deleteKnowledgeSource(sourceId: string): Promise<{ success: true }> {
+    return request<{ success: true }>(`/knowledge/source/${sourceId}`, { method: 'DELETE' });
+  }
+
+  async uploadKnowledgePdf(agentId: string, file: File): Promise<{ uploadedChunks: number; sourceId: string }> {
+    const token = typeof window !== 'undefined' ? localStorage.getItem('jwt') : null;
+    const headers: HeadersInit = {};
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    const formData = new FormData();
+    // agentId optional; passing it will also store it on chunks for debugging,
+    // but attachment is controlled via /agents/:id/knowledge-sources.
+    if (agentId) formData.append('agentId', agentId);
+    formData.append('file', file);
+
+    const response = await fetch(`${API_URL}/knowledge/upload`, {
+      method: 'POST',
+      headers,
+      body: formData,
+    });
+
+    if (!response.ok) {
+      let message = `Request failed with status ${response.status}`;
+      try {
+        const data = await response.json();
+        if (data && typeof data.error === 'string') message = data.error;
+      } catch {
+        // ignore
+      }
+      throw new Error(message);
+    }
+
+    return (await response.json()) as { uploadedChunks: number; sourceId: string };
+  }
+
+  async addKnowledgeUrl(agentId: string, url: string): Promise<{ uploadedChunks: number; sourceId: string }> {
+    return request<{ uploadedChunks: number; sourceId: string }>('/knowledge/url', {
+      method: 'POST',
+      body: { agentId, url },
+    });
+  }
+
+  async getAgentKnowledgeSourceIds(agentId: string): Promise<{ sourceIds: string[] }> {
+    return request<{ sourceIds: string[] }>(`/agents/${agentId}/knowledge-sources`);
+  }
+
+  async setAgentKnowledgeSourceIds(agentId: string, sourceIds: string[]): Promise<{ success: true; sourceIds: string[] }> {
+    return request<{ success: true; sourceIds: string[] }>(`/agents/${agentId}/knowledge-sources`, {
+      method: 'PUT',
+      body: { sourceIds },
+    });
+  }
+
   async uploadKnowledgeDoc(agentId: string, content: string): Promise<KnowledgeDocument> {
     return request<KnowledgeDocument>('/knowledge', {
       method: 'POST',
@@ -185,6 +270,16 @@ export class BolnaAPI {
     return request<{ id: string; callSid?: string }>('/call', {
       method: 'POST',
       body: { to, agentId },
+    });
+  }
+
+  async getActiveCalls(): Promise<ActiveCall[]> {
+    return request<ActiveCall[]>('/calls/active');
+  }
+
+  async hangupCall(callSid: string): Promise<{ success: boolean; message: string }> {
+    return request<{ success: boolean; message: string }>(`/calls/${callSid}/hangup`, {
+      method: 'POST',
     });
   }
 }

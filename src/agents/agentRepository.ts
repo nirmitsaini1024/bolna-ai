@@ -78,6 +78,7 @@ export class AgentRepository {
     name: string;
     systemPrompt: string;
     welcomeMessage?: string | null;
+    llmProvider?: string | null;
     llmModel?: string | null;
     temperature?: number | null;
     maxTokens?: number | null;
@@ -87,6 +88,7 @@ export class AgentRepository {
     language?: string | null;
 
     ttsProvider?: string | null;
+    ttsModel?: string | null;
     voice?: string | null;
     speechRate?: number | null;
     stability?: number | null;

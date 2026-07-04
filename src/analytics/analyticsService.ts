@@ -1,4 +1,4 @@
-import { PrismaClient, Prisma, Call } from '@prisma/client';
+import { PrismaClient, Call } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
 import { createLogger } from '../utils/logger';
@@ -94,7 +94,7 @@ export class AnalyticsService {
           },
         },
         take: limit,
-      } as Prisma.ToolEventGroupByArgs);
+      });
 
       const result: ToolUsage[] = grouped.map((g) => ({
         toolName: g.toolName,

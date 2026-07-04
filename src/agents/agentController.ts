@@ -26,6 +26,7 @@ export class AgentController {
       name,
       systemPrompt,
       welcomeMessage,
+      llmProvider,
       llmModel,
       maxTokens,
       temperature,
@@ -33,6 +34,7 @@ export class AgentController {
       sttModel,
       language,
       ttsProvider,
+      ttsModel,
       voice,
       speechRate,
       stability,
@@ -52,6 +54,7 @@ export class AgentController {
       name?: string;
       systemPrompt?: string;
       welcomeMessage?: string;
+      llmProvider?: string;
       llmModel?: string;
       maxTokens?: number;
       temperature?: number;
@@ -59,6 +62,7 @@ export class AgentController {
       sttModel?: string;
       language?: string;
       ttsProvider?: string;
+      ttsModel?: string;
       voice?: string;
       speechRate?: number;
       stability?: number;
@@ -92,6 +96,7 @@ export class AgentController {
         name: name.trim(),
         systemPrompt: prompt,
         welcomeMessage: welcomeMessage ?? null,
+        llmProvider: llmProvider ?? null,
         llmModel: llmModel ?? null,
         temperature,
         maxTokens: maxTokens ?? null,
@@ -99,6 +104,7 @@ export class AgentController {
         sttModel: sttModel ?? null,
         language: language ?? null,
         ttsProvider: ttsProvider ?? null,
+        ttsModel: ttsModel ?? null,
         voice: voiceId,
         speechRate: speechRate ?? null,
         stability: stability ?? null,
@@ -128,6 +134,7 @@ export class AgentController {
       name,
       systemPrompt,
       welcomeMessage,
+      llmProvider,
       llmModel,
       temperature,
       maxTokens,
@@ -135,6 +142,7 @@ export class AgentController {
       sttModel,
       language,
       ttsProvider,
+      ttsModel,
       voice,
       speechRate,
       stability,
@@ -154,6 +162,7 @@ export class AgentController {
       name?: string;
       systemPrompt?: string;
       welcomeMessage?: string;
+      llmProvider?: string;
       llmModel?: string;
       temperature?: number;
       maxTokens?: number;
@@ -161,6 +170,7 @@ export class AgentController {
       sttModel?: string;
       language?: string;
       ttsProvider?: string;
+      ttsModel?: string;
       voice?: string;
       speechRate?: number;
       stability?: number;
@@ -184,10 +194,11 @@ export class AgentController {
     }
 
     try {
-      const agent = await this.repository.updateAgent(id, {
+      const updates: any = {
         name,
         systemPrompt,
         welcomeMessage,
+        llmProvider,
         llmModel,
         temperature,
         maxTokens,
@@ -195,6 +206,7 @@ export class AgentController {
         sttModel,
         language,
         ttsProvider,
+        ttsModel,
         voice,
         speechRate,
         stability,
@@ -210,7 +222,9 @@ export class AgentController {
         noiseCancellation,
         voicemailDetection,
         autoReschedule,
-      });
+      };
+
+      const agent = await this.repository.updateAgent(id, updates);
       res.json(agent);
     } catch (error) {
       logger.error('Failed to update agent', { id, error });

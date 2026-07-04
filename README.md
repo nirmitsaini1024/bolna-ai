@@ -1,531 +1,523 @@
-# Voice AI Platform
+# Bolna — Voice AI Platform
 
-Production-grade Voice AI system with real-time speech processing, LLM reasoning, and natural conversation capabilities including barge-in support.
+Production-grade Voice AI platform (similar to Bolna, Vapi, Retell) with real-time phone calls via Twilio, configurable AI agents, knowledge-base RAG, analytics, and a Next.js dashboard.
 
-## Current Status: Phase 5 Complete ✅
+---
 
-**Implemented Features:**
-- ✅ Phase 1: Voice Gateway (Twilio Media Streams)
-- ✅ Phase 2: Speech-to-Text (Deepgram STT)
-- ✅ Phase 3: LLM Integration (OpenRouter)
-- ✅ Phase 4: Text-to-Speech (Deepgram TTS)
-- ✅ **Phase 5: Barge-In Support (NEW)**
+## For AI Agents / ChatGPT Handoff
 
-## Architecture Overview
+**Use this section when pasting the repo into another agent.** It summarizes what the project is, how it works, and where to look.
 
-This system implements a complete Voice AI platform similar to Bolna, Vapi, or Retell.
+### What this repo does
 
-### Full Pipeline
+1. **Receives phone calls** via Twilio Media Streams (WebSocket, μ-law 8 kHz audio).
+2. **Transcribes speech** with configurable STT — default **LOCAL** (in-house faster-whisper server), or Deepgram, Sarvam, ElevenLabs.
+3. **Reasons with an LLM** via OpenRouter (GPT-4o, Claude, etc.).
+4. **Speaks back** with configurable TTS — default **LOCAL** (in-house Piper server), or Deepgram, ElevenLabs, Cartesia, Sarvam.
+5. **Supports barge-in** — callers can interrupt the AI mid-sentence.
+6. **Stores call history**, messages, tool events, and customer records in PostgreSQL.
+7. **Retrieves knowledge** from a pgvector-backed knowledge base per agent.
+8. **Manages agents** via REST API and a Next.js dashboard.
+
+### Monorepo layout
+
+| Path | Role |
+|------|------|
+| `src/` | Backend: Express HTTP + WebSocket voice gateway |
+| `dashboard/` | Frontend: Next.js 15 admin UI (port 3001) |
+| `prisma/` | PostgreSQL schema + migrations (requires pgvector) |
+
+### Critical entry points
+
+| Task | File |
+|------|------|
+| All HTTP routes | `src/server.ts` |
+| WebSocket / call lifecycle | `src/voiceGateway/gateway.ts` |
+| Per-call pipeline (STT→LLM→TTS) | `src/voiceGateway/streamHandler.ts` (~1580 lines) |
+| Twilio TwiML webhook | `src/twilio/twimlController.ts` |
+| Agent CRUD | `src/agents/agentController.ts`, `agentRepository.ts` |
+| Agent lookup by phone | `src/agents/agentService.ts` |
+| Knowledge RAG | `src/knowledge/knowledgeService.ts` |
+| LLM client | `src/llm/openrouterClient.ts` |
+| Dashboard API client | `dashboard/lib/api.ts` |
+| DB schema | `prisma/schema.prisma` |
+
+### Call flow (inbound)
 
 ```
-Caller
-  ↓ (speaks)
-Twilio Media Streams
-  ↓ (WebSocket audio)
-Voice Gateway
-  ↓ (audio queue)
-Deepgram STT
-  ↓ (transcripts)
-OpenRouter LLM
-  ↓ (AI response)
-Deepgram TTS
-  ↓ (audio stream)
-Caller (hears AI)
-  ↓ (can interrupt!)
-Barge-In Support ← NEW!
+Caller dials Twilio number
+  → POST /voice (TwiML: <Connect><Stream url="wss://.../stream">)
+  → WebSocket /stream opens
+  → START event: create CallSession, load Agent (by agentId param or toPhoneNumber)
+  → MEDIA events: decode μ-law → STT stream → partial/final transcripts
+  → Final transcript → KB retrieval → LLM (with tools) → TTS → audio back to caller
+  → STOP event: persist call, cleanup session
 ```
 
-### How Twilio Media Streams Work
+**Agent resolution order** (in `streamHandler.loadAgentForSession`):
+1. `agentId` custom parameter from TwiML Stream (outbound calls)
+2. `toPhoneNumber` → `PhoneNumber` table → `Agent`
 
-Twilio Media Streams provide real-time access to the raw audio of phone calls:
+### Agent model (key fields)
 
-1. **Call Initiation**: When a call arrives, Twilio requests TwiML instructions from your webhook
-2. **Stream Connection**: TwiML `<Connect><Stream>` tells Twilio to establish a WebSocket connection
-3. **Bidirectional Audio**: Twilio streams audio chunks (mulaw encoded, 8kHz, 20ms frames) in real-time
-4. **Event-Driven**: The gateway receives `start`, `media`, and `stop` events asynchronously
+Agents are stored in PostgreSQL (`Agent` model). Important config:
 
-### Why WebSockets?
+- **LLM**: `llmProvider`, `llmModel`, `llmTemperature`, `llmTokens`, `systemPrompt`, `welcomeMessage`
+- **STT**: `sttProvider` (`LOCAL` (default) \| `DEEPGRAM` \| `SARVAM` \| `ELEVENLABS`), `sttModel`, `language`
+- **TTS**: `ttsProvider` (`LOCAL` (default) \| `DEEPGRAM` \| `ELEVENLABS` \| `CARTESIA` \| `SARVAM`), `ttsModel`, `voice`, `speechRate`, `stability`, etc.
 
-- **Low Latency**: Sub-100ms bidirectional communication required for natural conversations
-- **Full Duplex**: Simultaneous inbound (caller) and outbound (AI agent) audio streams
-- **Event-Driven**: Non-blocking architecture supports thousands of concurrent calls
-- **Stateful**: Maintains persistent connection per call for the entire session
+### LOCAL provider (in-house Voice AI server)
 
-### Key Features
+`LOCAL` is the default STT + TTS provider. It talks to a self-hosted FastAPI
+server (Piper TTS + faster-whisper STT, CPU-only, no API keys) at
+`VOICE_AI_BASE_URL` (default `http://localhost:8000`):
 
-#### 🎙️ Real-Time Speech Processing
-- Deepgram STT with live streaming
-- Low-latency transcription (< 1 second)
-- Handles 8kHz telephony audio
+- **TTS**: `POST /tts {text, voice}` returns WAV; `src/tts/localTTS.ts` converts
+  it to μ-law 8 kHz in-process (`src/utils/audioConvert.ts`, pure JS — no ffmpeg)
+  and streams 160-byte frames to Twilio. Voices: `male1`, `male2`, `female1`,
+  `female2` (Piper aliases), or full Piper model names like `en_US-lessac-medium`.
+- **STT**: `/stt` is batch-only, so `src/stt/localStream.ts` buffers μ-law audio,
+  does energy-based silence endpointing (`endpointingMs`, default 1000 ms), then
+  uploads the utterance as WAV and emits a final transcript. Expect ~1–3 s
+  latency on CPU (slower than streaming Deepgram).
+- **Fallback**: if the server is unreachable at call setup, the pipeline logs
+  `[STT_PROVIDER_FALLBACK]` / `[TTS_PROVIDER_FALLBACK_TO_DEEPGRAM]` and uses
+  Deepgram when `DEEPGRAM_API_KEY` is set.
+- **Behavior**: `interruptWords`, `endpointingMs`, `silenceTimeout`, `maxCallDuration`, `finalCallMessage`
 
-#### 🤖 LLM Integration
-- OpenRouter for flexible model selection
-- Conversation history management
-- Context-aware responses
+### Knowledge base
 
-#### 🔊 Natural Speech Synthesis
-- Deepgram TTS with streaming audio
-- Multiple voice options
-- Queue management for responses
+- **Global sources**: PDF upload or URL scrape → chunked (~700 chars) → embedded (1536-dim via OpenRouter) → stored in `KnowledgeDocument` with pgvector.
+- **Agent attachment**: Many-to-many via `AgentKnowledgeSource` (not by `agentId` on chunks alone).
+- **Retrieval**: On each user utterance, `knowledgeService.searchRelevantDocs(agentId, query, limit=3)` injects context into the LLM prompt.
 
-#### ⚡ Barge-In Support (Phase 5)
-- **User can interrupt AI while speaking**
-- Immediate TTS cancellation (< 500ms)
-- Natural conversation flow
-- Per-session isolation for concurrent calls
+### Known issues (important for contributors)
 
-### System Integration
+1. **Hardcoded API keys** in `src/voiceGateway/streamHandler.ts` and `src/knowledge/knowledgeService.ts` — marked `TEMP` for debugging. Should use `process.env.OPENROUTER_API_KEY`.
+2. **Dashboard API references** some routes not yet in `server.ts` (e.g. `GET /agents/:id`, `/agents/:id/tools`). Dashboard may 404 for those.
+3. **Auth is partial** — JWT middleware on some routes only; most agent/call/knowledge routes are unauthenticated.
+4. **Phone number normalization** in seed strips non-digits; Twilio may send E.164 with `+` — verify matching in `agentService.normalizePhoneNumber`.
 
-- **STT Pipeline**: Audio chunks → Speech-to-Text (Deepgram) ✅
-- **LLM Pipeline**: Transcribed text → Language Model (OpenRouter) ✅
-- **TTS Pipeline**: AI responses → Text-to-Speech (Deepgram) ✅
-- **Barge-In**: Interrupt handling and TTS cancellation ✅
-- **State Management**: Call context, conversation history, per-session isolation ✅
+---
+
+## Architecture
+
+```
+┌─────────────┐     POST /voice      ┌──────────────────┐
+│   Twilio    │ ──────────────────►  │  Express Server  │
+│  (Phone)    │                      │  (port 3000)     │
+└──────┬──────┘                      └────────┬─────────┘
+       │                                      │
+       │  WebSocket /stream                   │  REST API
+       ▼                                      ▼
+┌──────────────────┐                 ┌──────────────────┐
+│  Voice Gateway   │                 │  Dashboard       │
+│  streamHandler   │                 │  (Next.js 3001)  │
+└────────┬─────────┘                 └──────────────────┘
+         │
+    ┌────┴────┬──────────┬──────────┐
+    ▼         ▼          ▼          ▼
+  STT       LLM        TTS      PostgreSQL
+(LOCAL*    (OpenRouter) (LOCAL*  + pgvector
+ Deepgram               + multi)
+ Sarvam       *LOCAL = in-house Piper +
+ ElevenLabs)   faster-whisper server
+```
+
+### Audio format (Twilio Media Streams)
+
+| Property | Value |
+|----------|-------|
+| Encoding | μ-law (G.711), base64 in JSON |
+| Sample rate | 8000 Hz |
+| Channels | 1 (mono) |
+| Chunk size | ~160 bytes / 20 ms |
+| Tracks | `inbound` (caller), `outbound` (to caller) |
+
+### Barge-in
+
+When `ENABLE_BARGE_IN=true` and AI is speaking (`CallSession.isSpeaking`):
+- Inbound audio triggers `handleBargeIn()`
+- Aborts TTS via `AbortController`, clears queue
+- Processes new user speech
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|------------|
+| Runtime | Node.js, TypeScript |
+| HTTP | Express 4 |
+| WebSocket | `ws` |
+| Database | PostgreSQL + Prisma 7 + pgvector |
+| Telephony | Twilio (Media Streams, outbound calls) |
+| STT | **LOCAL (in-house faster-whisper, default)**, Deepgram, Sarvam, ElevenLabs |
+| LLM | OpenRouter (OpenAI, Anthropic, etc.) |
+| TTS | **LOCAL (in-house Piper, default)**, Deepgram, ElevenLabs, Cartesia, Sarvam |
+| Embeddings | OpenRouter embedding model |
+| Dashboard | Next.js, Tailwind CSS |
+| Auth | JWT (bcryptjs + jsonwebtoken) |
+
+---
 
 ## Project Structure
 
 ```
-voice-platform/
+bolna/
 ├── src/
-│   ├── server.ts                    # Main entry point, HTTP + WS server
+│   ├── server.ts                 # Main entry: HTTP routes + server bootstrap
 │   ├── voiceGateway/
-│   │   ├── gateway.ts               # WebSocket server orchestrator
-│   │   ├── streamHandler.ts        # Twilio Media Stream event processor
-│   │   ├── types.ts                 # TypeScript type definitions (with barge-in)
-│   │   └── audioQueue.ts            # Audio buffer management
+│   │   ├── gateway.ts            # WebSocket server, session metrics, hangup
+│   │   ├── streamHandler.ts      # Core call pipeline (STT/LLM/TTS/RAG/tools)
+│   │   ├── audioQueue.ts         # Audio buffer for STT
+│   │   └── types.ts              # CallSession, Twilio events
 │   ├── stt/
-│   │   └── deepgramStream.ts        # Speech-to-Text streaming
+│   │   ├── localStream.ts        # LOCAL: buffered faster-whisper adapter (default)
+│   │   ├── deepgramStream.ts
+│   │   ├── sarvamStream.ts
+│   │   └── elevenlabsStream.ts
 │   ├── llm/
-│   │   └── openrouterClient.ts      # LLM integration
+│   │   └── openrouterClient.ts   # Chat completions + tool calls
 │   ├── tts/
-│   │   └── deepgramTTS.ts           # Text-to-Speech with abort support
+│   │   ├── localTTS.ts           # LOCAL: Piper HTTP client + WAV→μ-law (default)
+│   │   ├── deepgramTTS.ts
+│   │   ├── elevenlabsTTS.ts
+│   │   ├── cartesiaTTS.ts
+│   │   └── sarvamTTS.ts
 │   ├── twilio/
-│   │   └── twimlController.ts       # TwiML generation for /voice endpoint
+│   │   └── twimlController.ts    # POST /voice → TwiML
+│   ├── agents/
+│   │   ├── agentController.ts    # REST handlers
+│   │   ├── agentRepository.ts    # Prisma queries
+│   │   └── agentService.ts       # Cache + phone lookup
+│   ├── knowledge/
+│   │   ├── knowledgeService.ts   # Ingest + RAG search
+│   │   ├── knowledgeRepository.ts
+│   │   └── embeddingService.ts
+│   ├── tools/
+│   │   ├── toolRegistry.ts
+│   │   ├── toolService.ts
+│   │   ├── toolExecutor.ts
+│   │   └── toolTypes.ts
+│   ├── analytics/
+│   │   ├── callService.ts
+│   │   ├── messageService.ts
+│   │   └── analyticsService.ts
+│   ├── outbound/
+│   │   ├── outboundController.ts
+│   │   └── outboundService.ts
+│   ├── customers/
+│   │   ├── customerService.ts
+│   │   └── customerRepository.ts
+│   ├── billing/
+│   │   ├── billingService.ts
+│   │   └── usageService.ts
+│   ├── auth/
+│   │   ├── authController.ts
+│   │   ├── authService.ts
+│   │   └── jwtMiddleware.ts
 │   └── utils/
-│       └── logger.ts                # Structured logging abstraction
-├── docs/
-│   ├── PHASE5_BARGE_IN.md          # Complete barge-in documentation
-│   ├── PHASE5_TESTING_GUIDE.md     # Testing instructions
-│   ├── PHASE5_SUMMARY.md           # Implementation summary
-│   └── PHASE5_VISUAL_FLOW.md       # Visual diagrams and flows
-├── package.json
-├── tsconfig.json
-└── .env
+│       └── logger.ts
+├── dashboard/
+│   ├── app/
+│   │   ├── page.tsx              # Dashboard home
+│   │   ├── login/page.tsx
+│   │   ├── calls/page.tsx        # Call history
+│   │   ├── calls/[id]/page.tsx   # Call detail + transcript
+│   │   ├── calls/live/page.tsx   # Active calls monitor
+│   │   ├── knowledge/page.tsx    # Global KB management
+│   │   ├── agents/[agentId]/knowledge/page.tsx
+│   │   ├── analytics/page.tsx
+│   │   ├── logs/page.tsx
+│   │   └── config/page.tsx       # Agent configuration
+│   ├── components/sidebar.tsx
+│   └── lib/
+│       ├── api.ts                # BolnaAPI client
+│       └── models.ts             # LLM model options
+├── prisma/
+│   ├── schema.prisma
+│   ├── seed.ts
+│   └── migrations/
+├── scripts/test-call.js
+├── setup-all.sh
+├── start.sh
+└── package.json
 ```
 
-## Setup Instructions
+---
 
-### 1. Install Dependencies
+## Database Schema (Prisma)
 
-```bash
-npm install
-```
+| Model | Purpose |
+|-------|---------|
+| `Agent` | Voice agent config (prompt, LLM/STT/TTS settings) |
+| `PhoneNumber` | Maps Twilio number → Agent |
+| `KnowledgeSource` | PDF/URL source metadata |
+| `KnowledgeDocument` | Text chunks + `vector(1536)` embedding |
+| `AgentKnowledgeSource` | M2M: which sources an agent uses |
+| `Call` | Call record (callSid, duration, agentId) |
+| `Message` | Transcript messages (user/assistant) per call |
+| `Tool` / `ToolEvent` | Agent tools + execution logs |
+| `Customer` / `CustomerNote` | Caller CRM |
+| `Organization` / `User` | Multi-tenant auth |
+| `OutboundCall` | Outbound call tracking |
+| `UsageRecord` | Billing usage |
 
-### 2. Configure Environment Variables
+**Requires**: PostgreSQL with `pgvector` extension (see migration `20260316180000_enable_pgvector`).
 
-Create a `.env` file:
+---
+
+## API Reference
+
+Base URL: `http://localhost:3000` (backend)
+
+### Health & Twilio
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/` | Service info |
+| GET | `/health` | Uptime, active connections/sessions |
+| POST | `/voice` | Twilio webhook → TwiML (do not call manually) |
+| WS | `/stream` | Twilio Media Stream (internal) |
+
+### Auth
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/auth/register` | — | Register user + org |
+| POST | `/auth/login` | — | Returns JWT |
+| GET | `/billing/usage` | JWT | Org usage summary |
+
+### Agents
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/agents` | List all agents |
+| POST | `/agents` | Create agent |
+| PUT | `/agents/:id` | Update agent |
+| DELETE | `/agents/:id` | Delete agent |
+| GET | `/agents/:id/knowledge-sources` | List attached KB source IDs |
+| PUT | `/agents/:id/knowledge-sources` | Set attached sources `{ sourceIds: [] }` |
+| POST | `/agents/:agentId/knowledge` | Add raw text doc (JWT) |
+
+### Calls
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/calls` | List calls (`?limit=N`) |
+| GET | `/calls/active` | Live sessions with transcript preview |
+| GET | `/calls/:id/messages` | Transcript for a call |
+| POST | `/calls/:callSid/hangup` | End call (Twilio + local cleanup) |
+| POST | `/call` | Outbound test call `{ to, agentId }` |
+| POST | `/outbound/call` | Outbound call `{ phone, agentId }` |
+
+### Knowledge Base
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/knowledge/upload` | PDF upload (multipart: `file`, optional `agentId`) |
+| POST | `/knowledge/url` | Scrape URL `{ url, agentId? }` |
+| GET | `/knowledge/source` | List all sources |
+| DELETE | `/knowledge/source/:id` | Delete source + chunks |
+
+---
+
+## Environment Variables
+
+Create `.env` in the repo root (see `.env.example`):
 
 ```env
+# Server
 PORT=3000
-NGROK_URL=wss://your-ngrok-url.ngrok-free.app
+NGROK_URL=wss://your-subdomain.ngrok-free.app   # WebSocket URL for Twilio
+PUBLIC_URL=https://your-subdomain.ngrok-free.app # HTTP URL for outbound webhooks
+DASHBOARD_ORIGIN=http://localhost:3001
 
-# Required for STT
-DEEPGRAM_API_KEY=your_deepgram_api_key
+# Database (required)
+DATABASE_URL=postgresql://user:pass@host:5432/bolna
 
-# Required for LLM
-OPENROUTER_API_KEY=your_openrouter_api_key
+# Twilio (required for calls)
+TWILIO_ACCOUNT_SID=
+TWILIO_AUTH_TOKEN=
+TWILIO_NUMBER=+1234567890
 
-# Required for Twilio integration
-TWILIO_ACCOUNT_SID=your_twilio_account_sid
-TWILIO_AUTH_TOKEN=your_twilio_auth_token
+# In-house Voice AI server (Piper TTS + faster-whisper STT) — default LOCAL provider
+VOICE_AI_BASE_URL=http://YOUR_DROPLET_IP:8000
 
-# Optional: Enable debug audio recording
-DEBUG_AUDIO=false
+# AI providers
+OPENROUTER_API_KEY=
+# Optional cloud STT/TTS fallbacks (not required if using LOCAL only)
+DEEPGRAM_API_KEY=
+SARVAM_API_KEY=          # if using Sarvam STT/TTS
+ELEVENLABS_API_KEY=      # if using ElevenLabs STT/TTS
+CARTESIA_API_KEY=        # if using Cartesia TTS
+
+# Optional
+DEBUG_AUDIO=false        # Save raw μ-law to debug_audio/
+ENABLE_BARGE_IN=true
+OPENROUTER_EMBEDDING_MODEL=  # defaults in embeddingService
+TEST_PHONE=+1234567890   # for scripts/test-call.js
 ```
 
-**Get API Keys:**
-- Deepgram: https://console.deepgram.com/
-- OpenRouter: https://openrouter.ai/keys
-- Twilio: https://console.twilio.com/
+Dashboard (`dashboard/.env.local`):
 
-### 3. Build the Project
-
-```bash
-npm run build
-```
-
-### 4. Start the Server
-
-For production:
-```bash
-npm start
-```
-
-For development with auto-reload:
-```bash
-npm run dev
-```
-
-You should see:
-```
-[2026-03-15T...] [INFO] [Server] Voice AI Platform started {"port":3000,"streamPath":"/stream","streamUrl":"wss://..."}
-```
-
-### 5. Expose Server with ngrok
-
-In a new terminal:
-```bash
-ngrok http 3000
-```
-
-Copy the forwarding URL (e.g., `https://abc123.ngrok-free.app`)
-
-Update `.env`:
 ```env
-NGROK_URL=wss://abc123.ngrok-free.app
+NEXT_PUBLIC_API_URL=http://localhost:3000
 ```
 
-Restart the server.
+---
 
-### 6. Configure Twilio Webhook
+## Setup
 
-1. Go to Twilio Console → Phone Numbers
-2. Select your Twilio number
-3. Under "Voice Configuration":
-   - **A CALL COMES IN**: Webhook
-   - **URL**: `https://abc123.ngrok-free.app/voice`
-   - **HTTP**: POST
-4. Save
+### Prerequisites
 
-### 7. Test the System
+- Node.js 18+
+- PostgreSQL with pgvector
+- ngrok (local dev) or public HTTPS/WSS URL (production)
+- Twilio account + phone number
+- In-house Voice AI server running (Piper + faster-whisper, `VOICE_AI_BASE_URL`)
+- API keys: OpenRouter (minimum); Deepgram optional as STT/TTS fallback
 
-Make a call to your Twilio number.
+### Quick start
 
-**Expected behavior:**
-1. AI greets you
-2. You can speak and AI responds
-3. **You can interrupt AI while it's speaking** (barge-in)
-4. Natural back-and-forth conversation
+```bash
+# 1. Install
+npm install
+cd dashboard && npm install && cd ..
 
-Expected logs:
-```
-[INFO] [TwiMLController] Incoming voice call {"callSid":"CA...","from":"+1234...","to":"+1567..."}
-[INFO] [VoiceGateway] New WebSocket connection {"connectionId":"uuid","activeConnections":1}
-[INFO] [StreamHandler] Call stream started {"callSid":"CA...","streamSid":"MZ...","encoding":"audio/x-mulaw","sampleRate":8000}
-[DEBUG] [StreamHandler] Audio chunk received {"callSid":"CA...","track":"inbound","sequenceNumber":"1","payloadSize":160}
-[INFO] [TRANSCRIPT] {"callSid":"CA...","text":"Hello","isFinal":true}
-[INFO] [AI_RESPONSE] {"callSid":"CA...","text":"Hi! How can I help you?"}
-[INFO] [TTS_START] {"callSid":"CA..."}
-[INFO] [BARGE_IN] {"callSid":"CA...","reason":"user_speech_detected"}
-[INFO] [TTS_ABORTED] {"callSid":"CA..."}
-[INFO] [TRANSCRIPT] {"callSid":"CA...","text":"Wait, I need help","isFinal":true}
-...
-[INFO] [StreamHandler] Call stream ended {"callSid":"CA...","duration":"45s"}
-```
+# 2. Configure .env (see above)
 
-## API Endpoints
+# 3. Database
+npx prisma migrate deploy
+npm run seed          # Creates support agent + assigns TWILIO_NUMBER
 
-### GET /
-Health check and service information
+# 4. Run backend
+npm run dev           # or: npm run build && npm start
 
-### POST /voice
-TwiML webhook that returns stream connection instructions
+# 5. Run dashboard (separate terminal)
+cd dashboard && npm run dev   # http://localhost:3001
 
-### GET /health
-System health and metrics:
-```json
-{
-  "status": "healthy",
-  "uptime": 3600,
-  "activeConnections": 5,
-  "activeSessions": 5
-}
+# 6. Expose backend for Twilio
+ngrok http 3000
+# Set NGROK_URL=wss://... and PUBLIC_URL=https://... in .env, restart backend
+
+# 7. Configure Twilio phone webhook
+# Voice → A CALL COMES IN → Webhook POST → https://<ngrok>/voice
 ```
 
-### WebSocket /stream
-Receives Twilio Media Stream connections (not accessed directly by clients)
+Or use `./setup-all.sh` to install and build everything.
 
-## Event Flow
+### Seed data
 
-```
-Incoming Call
-    ↓
-POST /voice (HTTP)
-    ↓
-TwiML Response: <Connect><Stream>
-    ↓
-WebSocket Connection /stream
-    ↓
-START event → Initialize session (isSpeaking=false)
-    ↓
-MEDIA events → Decode audio chunks (20ms μ-law)
-    ↓         ↓
-    ↓         └→ Barge-in Detection (if isSpeaking=true)
-    ↓                ↓
-    ↓                └→ Abort TTS, Clear Queue
-    ↓
-Audio Queue → Deepgram STT
-    ↓
-Transcripts → OpenRouter LLM
-    ↓
-AI Response → Deepgram TTS (isSpeaking=true)
-    ↓
-Audio Stream → Back to Caller
-    ↓
-STOP event → Cleanup session
-```
+`npm run seed` creates:
+- Agent `support-agent-1` with default ecommerce support prompt
+- Phone number mapping from `TWILIO_NUMBER` env var
 
-## Audio Format
+---
 
-- **Encoding**: μ-law (G.711)
-- **Sample Rate**: 8000 Hz
-- **Channels**: 1 (mono)
-- **Chunk Size**: ~160 bytes (20ms of audio)
-- **Base64 Encoded**: Decoded to Buffer in streamHandler
+## Dashboard
 
-## Scalability Considerations
+Next.js app at `http://localhost:3001`.
 
-This architecture is designed for production scale:
+| Route | Feature |
+|-------|---------|
+| `/` | Overview, health, quick stats |
+| `/calls/live` | Monitor active calls, hangup |
+| `/calls` | Call history |
+| `/calls/[id]` | Transcript + call detail |
+| `/knowledge` | Upload PDFs, add URLs, attach to agents |
+| `/config` | Create/edit agents (LLM, STT, TTS, behavior) |
+| `/analytics` | Call analytics |
+| `/logs` | System logs viewer |
+| `/login` | JWT login |
 
-- **Event-Driven**: Non-blocking I/O supports high concurrency
-- **Stateless HTTP**: TwiML endpoint scales horizontally
-- **Stateful WebSocket**: Session management isolated per connection
-- **Memory Efficient**: Streaming processing with proper cleanup
-- **Graceful Shutdown**: Proper cleanup of active sessions
-- **Barge-In Isolation**: Per-session abort controllers prevent cross-talk
-- **Concurrent Calls**: Multiple calls handled independently
+API client: `dashboard/lib/api.ts` → `BolnaAPI` class.
 
-## Phase 5: Barge-In Support 🎯
-
-### What is Barge-In?
-
-Barge-in allows users to interrupt the AI while it's speaking, creating natural conversation flow like human-to-human interaction.
-
-### Implementation
-
-**Key Components:**
-- `CallSession.isSpeaking` - Tracks AI speaking state
-- `CallSession.ttsAbortController` - Cancels TTS immediately
-- `DeepgramTTS.abort()` - Stops current audio stream
-- `DeepgramTTS.clearQueue()` - Removes pending responses
-- `StreamHandler.handleBargeIn()` - Interruption logic
-
-**How It Works:**
-1. User speaks while AI is talking
-2. System detects audio during `isSpeaking=true`
-3. Aborts TTS via `AbortController`
-4. Clears TTS queue
-5. Processes new user input
-6. Generates new AI response
-
-**Performance:**
-- Barge-in detection: < 50ms
-- TTS abort: < 100ms
-- Total interruption: < 500ms
-
-**Documentation:**
-- Complete docs: `PHASE5_BARGE_IN.md`
-- Testing guide: `PHASE5_TESTING_GUIDE.md`
-- Visual flows: `PHASE5_VISUAL_FLOW.md`
-- Summary: `PHASE5_SUMMARY.md`
-
-## Next Steps (Future Enhancements)
-
-### Phase 5.1: Enhanced Voice Activity Detection
-- Audio energy-based detection
-- Filter background noise
-- Configurable sensitivity levels
-
-### Phase 6: Advanced Features
-- Call analytics and monitoring
-- Redis for distributed session management
-- Rate limiting and authentication
-- Multiple language support
-- Custom voice training
-
-### Phase 7: Enterprise Features
-- Call recording and playback
-- Real-time transcription dashboard
-- A/B testing for AI personalities
-- Sentiment analysis
-- Call routing and transfer
+---
 
 ## Development
 
-Watch mode (auto-rebuild on changes):
 ```bash
-npm run watch
+npm run dev          # Backend with ts-node
+npm run watch        # TypeScript watch compile
+npm run build        # Compile to dist/
+npm run clean        # Remove dist/
+npm run test:call    # Trigger test outbound call
+npm run test:agent   # Test agent engine
+npm run seed         # Seed database
 ```
 
-Clean build artifacts:
-```bash
-npm run clean
+### Adding a new STT provider
+
+1. Create `src/stt/<provider>Stream.ts` implementing transcript callbacks.
+2. In `streamHandler.ts`, add provider branch in STT initialization (~line 1386).
+3. Add enum value to `SttProvider` in `prisma/schema.prisma` if persisted.
+
+### Adding a new TTS provider
+
+1. Create `src/tts/<provider>TTS.ts` with `speak()`, `abort()`, `clearQueue()`.
+2. Add branch in `streamHandler.ts` TTS factory (~line 1404).
+3. Expose in dashboard config UI and `Agent.ttsProvider`.
+
+### Adding an API route
+
+1. Add handler in appropriate `*Controller.ts` or inline in `server.ts`.
+2. Register route in `server.ts`.
+3. Add method to `dashboard/lib/api.ts` if dashboard needs it.
+
+---
+
+## Log Events (grep-friendly)
+
+```
+[AGENT_LOADED]        Agent resolved for call
+[TRANSCRIPT]          STT result (partial or final)
+[KB_RETRIEVAL]        Knowledge docs fetched
+[AI_RESPONSE]         LLM response text
+[TTS_START]           AI begins speaking
+[TTS_END]             AI finished speaking
+[BARGE_IN]            User interrupted AI
+[TTS_ABORTED]         TTS cancelled
+[OUTBOUND_CALL_CONNECTED]
+[TWILIO_HANGUP_SUCCESS]
 ```
 
-## Troubleshooting
+Enable debug audio: `DEBUG_AUDIO=true` → saves to `debug_audio/<callSid>.raw`
 
-### WebSocket Issues
-
-**WebSocket not connecting:**
-- Verify ngrok URL uses `wss://` protocol
-- Check ngrok is running and forwarding to correct port
-- Ensure NGROK_URL in .env matches actual ngrok URL
-
-**No audio chunks received:**
-- Verify Twilio webhook is configured correctly
-- Check server logs for connection establishment
-- Ensure call actually connected (not voicemail/busy)
-
-### Speech Processing Issues
-
-**STT not transcribing:**
-- Verify `DEEPGRAM_API_KEY` is set correctly
-- Check Deepgram account has credits
-- Look for `[TRANSCRIPT]` logs
-- Ensure audio quality is good (speak clearly)
-
-**LLM not responding:**
-- Verify `OPENROUTER_API_KEY` is set correctly
-- Check OpenRouter account has credits
-- Look for `[AI_RESPONSE]` logs
-- Check rate limits
-
-**TTS not playing:**
-- Verify `DEEPGRAM_API_KEY` is set correctly
-- Check Deepgram TTS is enabled on account
-- Look for `[TTS_START]` and `[TTS_END]` logs
-- Verify WebSocket is still open
-
-### Barge-In Issues
-
-**AI doesn't stop when interrupted:**
-- Check `isSpeaking` flag is set to `true`
-- Verify `[BARGE_IN]` log appears
-- Check `ttsAbortController` exists
-- Look for `[TTS_ABORTED]` log
-
-**Too sensitive (interrupts on background noise):**
-- Expected behavior in Phase 5 (any audio triggers)
-- Future: Will add energy-based detection
-- Workaround: Use quieter environment
-
-**TTS doesn't resume after interruption:**
-- Check STT continues processing (`[TRANSCRIPT]` logs)
-- Verify LLM generates response (`[AI_RESPONSE]` logs)
-- Ensure `isSpeaking` reset to `false`
-
-### Debug Mode
-
-Enable detailed logging:
-```env
-DEBUG_AUDIO=true
-```
-
-This will:
-- Save raw audio to `debug_audio/` folder
-- Add verbose logging
-- Help diagnose audio issues
-
-Convert debug audio to WAV:
+Convert to WAV:
 ```bash
 sox -t ul -r 8000 -c 1 debug_audio/CAxxxx.raw output.wav
 ```
 
-### Build Issues
+---
 
-**Build errors:**
-- Run `npm install` to ensure all dependencies installed
-- Check TypeScript version: `npx tsc --version`
-- Verify Node.js version: `node --version` (requires v16+)
-- Run `npm run clean` then `npm run build`
+## Troubleshooting
 
-## Monitoring and Logs
+| Problem | Check |
+|---------|-------|
+| WebSocket won't connect | `NGROK_URL` must be `wss://`, not `https://` |
+| No agent on call | Run seed; verify `PhoneNumber` maps Twilio `To` number |
+| STT silent | `VOICE_AI_BASE_URL` reachable (`curl $VOICE_AI_BASE_URL/health`) for LOCAL, else provider API key; agent `sttProvider`; look for `[TRANSCRIPT]` |
+| LLM silent | `OPENROUTER_API_KEY` |
+| TTS silent | `VOICE_AI_BASE_URL` reachable for LOCAL, else provider API key; agent `ttsProvider`/`voice`; `[TTS_START]` logs |
+| Outbound fails | `PUBLIC_URL`, `TWILIO_*` env vars |
+| KB not used | Agent has sources attached via `/agents/:id/knowledge-sources` |
+| Dashboard CORS | `DASHBOARD_ORIGIN` matches dashboard URL |
 
-### Log Levels
+---
 
-- `INFO`: Important events (calls, transcripts, responses)
-- `DEBUG`: Detailed flow (audio chunks, state changes)
-- `WARN`: Recoverable issues (queue full, WebSocket errors)
-- `ERROR`: Critical failures (API errors, crashes)
+## Production Notes
 
-### Key Log Events
+- Use PM2 or similar: `pm2 start dist/server.js --name bolna-backend`
+- Health check: `GET /health`
+- WebSocket needs sticky sessions behind load balancer
+- Validate Twilio request signatures (not yet implemented)
+- Rotate API keys regularly
+- Use `npm run build` before `npm start`
 
-```
-[TRANSCRIPT]          - User speech transcribed
-[AI_RESPONSE]         - LLM response generated
-[TTS_START]           - AI begins speaking
-[TTS_STREAM]          - Audio chunk sent
-[TTS_END]             - AI finishes speaking
-[BARGE_IN]            - User interrupts AI
-[TTS_ABORTED]         - TTS cancelled
-[TTS_QUEUE_CLEARED]   - Pending responses removed
-```
-
-### Monitor Real-Time
-
-```bash
-# All events
-tail -f logs/*.log
-
-# Speech processing
-tail -f logs/*.log | grep -E "TRANSCRIPT|AI_RESPONSE|TTS"
-
-# Barge-in events
-tail -f logs/*.log | grep "BARGE_IN"
-
-# Errors only
-tail -f logs/*.log | grep ERROR
-```
-
-## Production Deployment
-
-### Recommended Setup
-
-1. **Use a process manager:**
-   ```bash
-   pm2 start dist/server.js --name voice-ai
-   pm2 logs voice-ai
-   ```
-
-2. **Set up monitoring:**
-   - Use `/health` endpoint for health checks
-   - Monitor active sessions count
-   - Alert on high error rates
-
-3. **Scale horizontally:**
-   - Load balancer for HTTP endpoints
-   - WebSocket sticky sessions
-   - Future: Redis for session storage
-
-4. **Security:**
-   - Use HTTPS/WSS in production
-   - Validate Twilio signatures
-   - Rate limit webhooks
-   - Rotate API keys regularly
-
-### Performance Tuning
-
-**Expected Latencies:**
-- End-to-end (user speaks → AI responds): 2-4 seconds
-- STT transcription: 500-1000ms
-- LLM response: 500-1500ms
-- TTS generation: 500-1000ms
-- Barge-in interruption: < 500ms
-
-**Optimization Tips:**
-- Use faster LLM models (gpt-4o-mini vs gpt-4)
-- Enable streaming for STT and TTS
-- Pre-warm connections
-- Use CDN for static assets
+---
 
 ## License
 
 MIT
-
-## Support
-
-For issues, questions, or contributions:
-- Read documentation in `/docs`
-- Check troubleshooting section
-- Review logs for error messages
-- Test with `PHASE5_TESTING_GUIDE.md`

@@ -101,6 +101,40 @@ export class CallService {
     }
   }
 
+  async listCalls(params?: {
+    limit?: number;
+  }): Promise<
+    Array<{
+      id: string;
+      callSid: string;
+      phone: string;
+      agentId: string | null;
+      startedAt: Date;
+      endedAt: Date | null;
+      durationMs: number | null;
+      createdAt: Date;
+    }>
+  > {
+    const limit = Math.min(Math.max(params?.limit ?? 200, 1), 500);
+
+    const calls = await this.prisma.call.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+      select: {
+        id: true,
+        callSid: true,
+        phone: true,
+        agentId: true,
+        startedAt: true,
+        endedAt: true,
+        durationMs: true,
+        createdAt: true,
+      },
+    });
+
+    return calls;
+  }
+
   async disconnect(): Promise<void> {
     await this.prisma.$disconnect();
     await this.pool.end();

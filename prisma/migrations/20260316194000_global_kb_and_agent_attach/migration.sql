@@ -1,0 +1,1 @@
+-- This migration is now a no-op; schema is represented directly in prisma.schema.

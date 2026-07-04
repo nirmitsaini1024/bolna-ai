@@ -7,8 +7,10 @@ datasource db {
 }
 
 enum SttProvider {
+  LOCAL
   DEEPGRAM
   SARVAM
+  ELEVENLABS
 }
 
 model Agent {
@@ -19,15 +21,19 @@ model Agent {
   systemPrompt     String
   welcomeMessage   String?
 
+  llmProvider      String?  @default("OpenRouter")
   llmModel         String?
+  llmTemperature   Float?   @default(0.7)
+  llmTokens        Int?     @default(256)
   temperature      Float?   @default(0.3)
   maxTokens        Int?
 
-  sttProvider      SttProvider @default(DEEPGRAM)
+  sttProvider      SttProvider @default(LOCAL)
   sttModel         String?
   language         String?
 
   ttsProvider      String?
+  ttsModel         String?
   voice            String?
   speechRate       Float?
   stability        Float?
@@ -53,9 +59,36 @@ model Agent {
 
   phoneNumbers       PhoneNumber[]
   knowledgeDocuments KnowledgeDocument[]
+  knowledgeSources   AgentKnowledgeSource[]
   tools              Tool[]
 
   organization Organization? @relation(fields: [organizationId], references: [id])
+}
+
+model KnowledgeSource {
+  id        String   @id @default(uuid())
+  type      String
+  title     String
+  url       String?
+  createdAt DateTime @default(now())
+
+  documents KnowledgeDocument[]
+  agents    AgentKnowledgeSource[]
+
+}
+
+model AgentKnowledgeSource {
+  id        String   @id @default(uuid())
+  agentId   String
+  sourceId  String
+  createdAt DateTime @default(now())
+
+  agent  Agent          @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  source KnowledgeSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+
+  @@unique([agentId, sourceId])
+  @@index([agentId])
+  @@index([sourceId])
 }
 
 model PhoneNumber {
@@ -68,14 +101,17 @@ model PhoneNumber {
 model KnowledgeDocument {
   id        String   @id @default(uuid())
   organizationId String?
-  agentId   String
+  sourceId  String
+  agentId   String?
   content   String
-  embedding Float[]
+  embedding Unsupported("vector(1536)")
   createdAt DateTime @default(now())
 
-  agent Agent @relation(fields: [agentId], references: [id])
+  agent  Agent?          @relation(fields: [agentId], references: [id])
+  source KnowledgeSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
 
   @@index([agentId])
+  @@index([sourceId])
 }
 
 model Tool {

@@ -34,74 +34,61 @@ export default function CallTranscriptPage() {
   }, [callId]);
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900">
-      <nav className="border-b border-white/10 bg-black/20 backdrop-blur-sm">
-        <div className="mx-auto max-w-5xl px-6 py-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <Link
-                href="/calls"
-                className="flex h-10 w-10 items-center justify-center rounded-lg bg-gradient-to-br from-purple-500 to-pink-500"
-              >
-                <span className="text-xl font-bold text-white">B</span>
-              </Link>
-              <div>
-                <h1 className="text-2xl font-bold text-white">Call Transcript</h1>
-                <p className="text-xs text-gray-400 truncate">
-                  Call ID: {callId}
-                </p>
-              </div>
-            </div>
-            <Link
-              href="/calls"
-              className="rounded-lg bg-white/10 px-4 py-2 text-sm text-white transition hover:bg-white/20"
-            >
-              Back to calls
-            </Link>
+    <div className="min-h-screen bg-[#020817] text-white">
+      <div className="mx-auto max-w-5xl px-6 py-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-sm text-gray-400">Agent Conversations</div>
+            <h1 className="text-xl font-semibold">Transcript</h1>
+            <div className="mt-1 font-mono text-[11px] text-gray-500">Execution ID: {callId}</div>
           </div>
+          <Link
+            href="/calls"
+            className="rounded-md border border-gray-800 bg-[#0b1220] px-3 py-2 text-sm text-gray-200 hover:bg-[#0f1a2f]"
+          >
+            Back to call logs
+          </Link>
         </div>
-      </nav>
 
-      <main className="mx-auto max-w-5xl px-6 py-6">
+        <div className="mt-4 rounded-lg border border-gray-800 bg-[#0b1220]">
         {loading ? (
-          <div className="flex h-64 items-center justify-center">
-            <div className="h-12 w-12 animate-spin rounded-full border-4 border-purple-500 border-t-transparent" />
-          </div>
+          <div className="flex h-48 items-center justify-center text-sm text-gray-400">Loading…</div>
         ) : error ? (
-          <div className="flex h-64 items-center justify-center text-sm text-red-400">
-            {error}
-          </div>
+          <div className="flex h-48 items-center justify-center text-sm text-red-400">{error}</div>
         ) : messages.length === 0 ? (
-          <div className="flex h-64 items-center justify-center text-sm text-gray-400">
+          <div className="flex h-48 items-center justify-center text-sm text-gray-400">
             No transcript available for this call.
           </div>
         ) : (
-          <div className="space-y-3 rounded-xl border border-white/10 bg-black/40 p-4 backdrop-blur-sm">
+          <div className="space-y-3 p-4">
             {messages.map((m) => (
               <div
                 key={m.id}
                 className={`flex ${m.role === 'user' ? 'justify-start' : 'justify-end'}`}
               >
                 <div
-                  className={`max-w-[80%] rounded-2xl px-4 py-2 text-sm ${
+                  className={`max-w-[85%] rounded-2xl border px-4 py-2 text-sm ${
                     m.role === 'user'
-                      ? 'bg-white/10 text-white rounded-tl-none'
-                      : 'bg-purple-500/30 text-white rounded-tr-none'
+                      ? 'border-gray-700 bg-[#020817] text-gray-100 rounded-tl-none'
+                      : 'border-blue-500/30 bg-blue-500/10 text-gray-100 rounded-tr-none'
                   }`}
                 >
-                  <div className="text-[10px] uppercase tracking-wide text-gray-400 mb-1">
-                    {m.role === 'user' ? 'User' : 'Agent'}
+                  <div className="mb-1 flex items-center justify-between gap-3">
+                    <div className="text-[10px] uppercase tracking-wide text-gray-400">
+                      {m.role === 'user' ? 'User' : 'Agent'}
+                    </div>
+                    <div className="font-mono text-[10px] text-gray-500">
+                      {new Date(m.createdAt).toLocaleTimeString()}
+                    </div>
                   </div>
-                  <div>{m.content}</div>
-                  <div className="mt-1 text-[10px] text-gray-500">
-                    {new Date(m.createdAt).toLocaleTimeString()}
-                  </div>
+                  <div className="whitespace-pre-wrap">{m.content}</div>
                 </div>
               </div>
             ))}
           </div>
         )}
-      </main>
+        </div>
+      </div>
     </div>
   );
 }
